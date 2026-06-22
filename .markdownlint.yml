@@ -38,8 +38,7 @@ MD040: false
 MD041: false
 
 # MD060 - Table column alignment (use compact style for flexibility)
-MD060:
-  style: compact
+MD060: false
 
 # Additional rules
 MD024: false  # Multiple headings with same content allowed
