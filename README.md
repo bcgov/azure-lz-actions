@@ -57,6 +57,27 @@ opening a pull request.
     # Action-specific inputs
 ```
 
+## Automation
+
+This repository includes automation to keep bundled actions reliable and releasable:
+
+- `.github/workflows/validate-actions.yml`
+  - Runs on pull requests and pushes to `main`
+  - Validates source syntax
+  - Rebuilds bundled artifacts and fails if `dist` changes are not committed
+  - Runs `pre-commit` checks across the repository
+
+- `.github/workflows/release-actions.yml`
+  - Runs on tag pushes matching `v*` (and manual dispatch)
+  - Rebuilds and verifies bundled artifacts are in sync with source
+  - Publishes a GitHub Release and uploads a packaged action tarball
+
+### Release Flow
+
+1. Merge validated changes to `main`.
+2. Create and push a semantic tag (example: `v1.2.0`).
+3. The release workflow validates the tagged source and publishes release assets.
+
 ## Contributing
 
 We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for

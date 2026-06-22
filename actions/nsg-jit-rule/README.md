@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Azure Login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -99,7 +99,7 @@ This action uses Azure Workload Identity Federation. Ensure your workflow is con
 
 1. Azure OIDC provider and federated credentials
 2. Service principal with NSG permissions
-3. `azure/login@v2` before running the action
+3. `azure/login@v3` before running the action
 
 ### Minimal Required Permissions
 

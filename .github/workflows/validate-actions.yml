@@ -1,0 +1,154 @@
+name: Validate Bundled Actions
+
+on:
+  pull_request:
+    paths:
+      - 'actions/**'
+      - '.github/workflows/validate-actions.yml'
+      - '.pre-commit-config.yaml'
+      - '.yamllint.yml'
+      - '.markdownlint.yml'
+    paths-ignore:
+      - '**/*.md'
+  push:
+    branches:
+      - main
+    paths:
+      - 'actions/**'
+      - '.github/workflows/validate-actions.yml'
+      - '.pre-commit-config.yaml'
+      - '.yamllint.yml'
+      - '.markdownlint.yml'
+    paths-ignore:
+      - '**/*.md'
+
+permissions:
+  contents: read
+
+jobs:
+  detect-actions:
+    name: Detect Changed Actions
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+      has_actions: ${{ steps.detect.outputs.has_actions }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed action directories
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE_SHA="${{ github.event.before }}"
+            HEAD_SHA="${{ github.sha }}"
+            if [[ "$BASE_SHA" =~ ^0+$ ]]; then
+              BASE_SHA="$(git rev-list --max-parents=0 "$HEAD_SHA")"
+            fi
+          fi
+
+          mapfile -t ACTIONS < <(
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
+              | grep '^actions/' \
+              | grep -v '\.md$' \
+              | awk -F/ '{print $1"/"$2}' \
+              | sort -u \
+              | while read -r dir; do
+                  if [[ -f "$dir/action.yml" ]]; then
+                    echo "$dir"
+                  fi
+                done
+          )
+
+          if [[ ${#ACTIONS[@]} -eq 0 ]]; then
+            echo 'matrix={"action":[]}' >> "$GITHUB_OUTPUT"
+            echo 'has_actions=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          MATRIX_JSON="$(printf '%s\n' "${ACTIONS[@]}" | python3 -c 'import json,sys; actions=[x.strip() for x in sys.stdin if x.strip()]; print(json.dumps({"action": actions}))')"
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+          echo 'has_actions=true' >> "$GITHUB_OUTPUT"
+
+  validate-actions:
+    name: Validate ${{ matrix.action }}
+    needs: detect-actions
+    if: needs.detect-actions.outputs.has_actions == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect-actions.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ${{ matrix.action }}/package-lock.json
+
+      - name: Install dependencies
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        working-directory: ${{ matrix.action }}
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Verify source syntax
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        working-directory: ${{ matrix.action }}
+        run: npm run verify --if-present
+
+      - name: Build bundled artifacts
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        working-directory: ${{ matrix.action }}
+        run: npm run build --if-present
+
+      - name: Ensure dist is committed
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        run: |
+          set -euo pipefail
+          DIST_DIR="${{ matrix.action }}/dist"
+          DIST_CLEANUP_DIR="${{ matrix.action }}/dist-cleanup"
+
+          if [[ ! -d "$DIST_DIR" && ! -d "$DIST_CLEANUP_DIR" ]]; then
+            echo "No dist directories in ${{ matrix.action }}; skipping dist sync validation."
+            exit 0
+          fi
+
+          if ! git diff --quiet -- "$DIST_DIR" "$DIST_CLEANUP_DIR"; then
+            echo "Bundled artifacts are out of date for ${{ matrix.action }}. Run npm run build and commit dist changes."
+            git --no-pager diff -- "$DIST_DIR" "$DIST_CLEANUP_DIR" | cat
+            exit 1
+          fi
+
+  pre-commit:
+    name: Pre-commit Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run pre-commit
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pre-commit
+          pre-commit run --all-files

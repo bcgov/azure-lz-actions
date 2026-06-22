@@ -1,0 +1,201 @@
+name: Release Bundled Action
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (for manual reruns)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  detect-actions:
+    name: Detect Changed Actions For Release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      matrix: ${{ steps.detect.outputs.matrix }}
+      has_actions: ${{ steps.detect.outputs.has_actions }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+            if [[ -z "$TAG" ]]; then
+              echo "For workflow_dispatch, provide an existing tag in inputs.tag"
+              exit 1
+            fi
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Detect changed action directories since previous tag
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.tag.outputs.tag }}"
+          TAG_SHA="$(git rev-list -n 1 "$TAG")"
+          PREV_TAG="$(git describe --tags --abbrev=0 "${TAG_SHA}^" 2>/dev/null || true)"
+
+          if [[ -n "$PREV_TAG" ]]; then
+            RANGE="$PREV_TAG..$TAG"
+          else
+            ROOT_SHA="$(git rev-list --max-parents=0 "$TAG_SHA")"
+            RANGE="$ROOT_SHA..$TAG"
+          fi
+
+          mapfile -t ACTIONS < <(
+            git diff --name-only "$RANGE" \
+              | grep '^actions/' \
+              | grep -v '\.md$' \
+              | awk -F/ '{print $1"/"$2}' \
+              | sort -u \
+              | while read -r dir; do
+                  if [[ -f "$dir/action.yml" ]]; then
+                    echo "$dir"
+                  fi
+                done
+          )
+
+          if [[ ${#ACTIONS[@]} -eq 0 ]]; then
+            echo 'matrix={"action":[]}' >> "$GITHUB_OUTPUT"
+            echo 'has_actions=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          MATRIX_JSON="$(printf '%s\n' "${ACTIONS[@]}" | python3 -c 'import json,sys; actions=[x.strip() for x in sys.stdin if x.strip()]; print(json.dumps({"action": actions}))')"
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+          echo 'has_actions=true' >> "$GITHUB_OUTPUT"
+
+  release-actions:
+    name: Build ${{ matrix.action }}
+    needs: detect-actions
+    if: needs.detect-actions.outputs.has_actions == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect-actions.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag points to main lineage
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth=1
+          TAG_SHA="$(git rev-list -n 1 "${{ needs.detect-actions.outputs.tag }}")"
+          if ! git merge-base --is-ancestor "$TAG_SHA" origin/main; then
+            echo "Tag ${{ needs.detect-actions.outputs.tag }} is not reachable from origin/main"
+            exit 1
+          fi
+
+      - name: Setup Node
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ${{ matrix.action }}/package-lock.json
+
+      - name: Install dependencies
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        working-directory: ${{ matrix.action }}
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Verify source syntax
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        working-directory: ${{ matrix.action }}
+        run: npm run verify --if-present
+
+      - name: Build bundled artifacts
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        working-directory: ${{ matrix.action }}
+        run: npm run build --if-present
+
+      - name: Ensure release tag has committed dist
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        run: |
+          set -euo pipefail
+          DIST_DIR="${{ matrix.action }}/dist"
+          DIST_CLEANUP_DIR="${{ matrix.action }}/dist-cleanup"
+
+          if [[ ! -d "$DIST_DIR" && ! -d "$DIST_CLEANUP_DIR" ]]; then
+            echo "No dist directories in ${{ matrix.action }}; skipping dist sync validation."
+            exit 0
+          fi
+
+          if ! git diff --quiet -- "$DIST_DIR" "$DIST_CLEANUP_DIR"; then
+            echo "Release tag contains stale dist artifacts for ${{ matrix.action }}. Rebuild and retag before releasing."
+            git --no-pager diff -- "$DIST_DIR" "$DIST_CLEANUP_DIR" | cat
+            exit 1
+          fi
+
+      - name: Package action bundle
+        run: |
+          set -euo pipefail
+          ACTION_NAME="$(basename "${{ matrix.action }}")"
+          tar -czf "${ACTION_NAME}-${{ needs.detect-actions.outputs.tag }}.tar.gz" "${{ matrix.action }}"
+
+      - name: Upload packaged action artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-${{ matrix.action }}
+          path: ./*.tar.gz
+
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - detect-actions
+      - release-actions
+    if: needs.detect-actions.outputs.has_actions == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.detect-actions.outputs.tag }}"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --generate-notes --title "$TAG"
+          find release-assets -type f -name '*.tar.gz' -print0 | xargs -0 -I{} gh release upload "$TAG" "{}" --clobber
+
+  no-action-changes:
+    name: No Action Changes
+    needs: detect-actions
+    if: needs.detect-actions.outputs.has_actions != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip release packaging
+        run: echo "No action source changes detected for this tag. Skipping build/release asset upload."
