@@ -133,17 +133,125 @@ Microsoft.Network/networkSecurityGroups/read
     destination-prefix: '192.168.0.0/16'
 ```
 
-## Implementation Status
+## Enterprise Features
 
-This action is a framework template ready for enterprise-grade implementation. The boilerplate structure supports:
+### Automatic Cleanup (Post-Action)
 
-- Azure identity and authentication
-- NSG resource management
-- Rule lifecycle operations (create, update, verify)
-- Output reporting and state tracking
-- Error handling and logging
+The action supports automatic cleanup of created rules via post-action execution. This ensures JIT rules are always reverted, even if the workflow fails.
 
-**Ready to accept sample code for integration.**
+```yaml
+- uses: bcgov/azure-lz-actions/actions/nsg-jit-rule@main
+  id: create-rule
+  with:
+    subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    resource-group: 'my-rg'
+    nsg-name: 'my-nsg'
+    rule-name: 'jit-access-rule'
+    destination-ports: '3389'
+    protocol: 'Tcp'
+    direction: 'Inbound'
+    destination-prefix: '*'
+
+- name: Automatically revert NSG rule on completion
+  if: ${{ always() }}
+  run: |\n    # Use the outputs from the main action for cleanup
+    az network nsg rule delete \\\n      --resource-group \"${{ steps.create-rule.outputs.resource-group }}\" \\\n      --nsg-name \"${{ steps.create-rule.outputs.nsg-name }}\" \\\n      --name \"${{ steps.create-rule.outputs.rule-name }}\"\n```
+
+### Input Validation
+
+The action validates all inputs before execution:
+
+- **Subscription ID**: UUID format validation
+- **Resource names**: Azure naming conventions (alphanumeric, hyphens, underscores, dots only)
+- **Protocol**: Must be TCP, UDP, or *
+- **Direction**: Must be Inbound or Outbound
+- **Priority**: Range 100-4096
+- **Ports**: Single port, range (e.g., 80-443), or comma-separated list
+- **CIDR blocks**: Valid IPv4 CIDR notation
+
+Invalid inputs fail fast with descriptive error messages.
+
+### Pre-flight Verification
+
+Before rule creation, the action verifies:
+
+- Azure authentication and OIDC token validity
+- Resource group exists and is accessible
+- NSG exists in the resource group
+- Current NSG rule state (for conflict detection)
+- Sufficient permissions via Microsoft.Network/networkSecurityGroups/* roles
+
+### Retry Logic with Exponential Backoff
+
+Critical operations retry automatically on transient failures:
+
+- Azure authentication (3 attempts)
+- Resource verification (3 attempts)
+- Rule creation (3 attempts)
+- Cleanup operations (2 attempts)
+
+Retry delays: 1s → 2s → 4s (exponential backoff)
+
+### Structured Audit Logging
+
+All operations log structured JSON audit trails including:
+
+- Timestamp (ISO 8601)
+- GitHub context (run ID, actor, repository, workflow name)
+- Azure context (subscription, resource group, NSG, rule details)
+- Operation status and duration
+- Error details on failure
+
+**Example audit log:**
+
+```json
+{
+  \"timestamp\": \"2024-12-20T15:30:45.123Z\",
+  \"action\": \"nsg-jit-rule-created\",
+  \"github\": {
+    \"run_id\": \"12345678\",
+    \"actor\": \"github-user\",
+    \"repository\": \"org/repo\",
+    \"workflow\": \"Create NSG Access\"
+  },
+  \"azure\": {
+    \"subscription_id\": \"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\",
+    \"resource_group\": \"prod-rg\",
+    \"nsg_name\": \"prod-nsg\",
+    \"rule\": {
+      \"name\": \"jit-ssh-access\",
+      \"priority\": 3000,
+      \"direction\": \"Inbound\",
+      \"protocol\": \"TCP\",
+      \"source_ip\": \"203.0.113.42\",
+      \"source_cidr\": \"203.0.113.42/32\",
+      \"destination_ports\": \"22\"
+    }
+  },
+  \"status\": \"success\",
+  \"duration_ms\": 8500
+}\n```
+
+### Error Recovery
+
+The action handles common failure scenarios gracefully:
+
+- **Authentication failures**: Clear error message about OIDC setup
+- **Missing resources**: Guides user to verify RG/NSG exists
+- **Permission errors**: References required RBAC roles
+- **Rule conflicts**: Warns about existing rules but proceeds
+- **Transient failures**: Retries automatically with backoff
+- **Timeout errors**: Reports specific operation that timed out
+
+### Runner IP Auto-detection
+
+The action automatically detects the runner's private IP via:
+
+1. **Routing table lookup** (primary): `ip -4 route get 1.1.1.1`
+2. **Environment variable** (fallback): `RUNNER_PRIVATE_IP`
+3. **Error handling**: Clear guidance if neither method succeeds
+
+The resolved IP is used as the source CIDR (`/32` subnet mask) for the rule.
 
 ## Security Considerations
 

@@ -40,15 +40,29 @@ inputs:
 
 outputs:
   rule-id:
-    description: 'Resource ID of the created/updated NSG rule'
+    description: 'Resource ID of the created NSG rule'
   rule-name:
-    description: 'Name of the NSG rule'
+    description: 'Name of the NSG rule (for cleanup/verification)'
+  nsg-name:
+    description: 'Name of the NSG (for cleanup operations)'
+  resource-group:
+    description: 'Resource group name (for cleanup operations)'
+  subscription-id:
+    description: 'Subscription ID (for audit/cleanup operations)'
+  source-ip:
+    description: 'GitHub runner private IP address'
+  source-cidr:
+    description: 'Source CIDR used for rule (IP/32)'
   pre-state:
-    description: 'Previous state of the rule (if it existed)'
+    description: 'Previous NSG state before rule creation (JSON)'
   post-state:
-    description: 'Current state of the rule after the action'
+    description: 'Current NSG rule state after creation (JSON)'
   status:
-    description: 'Status of the operation (Created, Updated, or NoChange)'
+    description: 'Operation status (created, failed, etc.)'
+  timestamp:
+    description: 'ISO 8601 timestamp of operation'
+  error:
+    description: 'Error message if operation failed (only set on failure)'
 
 runs:
   using: 'node20'
