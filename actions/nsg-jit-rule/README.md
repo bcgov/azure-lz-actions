@@ -135,13 +135,21 @@ Microsoft.Network/networkSecurityGroups/read
 
 ## Enterprise Features
 
-### Automatic Cleanup (Post-Action)
+### Automatic Cleanup (Built-in Post-Action)
 
-The action supports automatic cleanup of created rules via post-action execution. This ensures JIT rules are always reverted, even if the workflow fails.
+**No manual cleanup required.** This action automatically reverts NSG rules via a built-in post-action that executes after the main action completes, regardless of success or failure. This eliminates the risk of orphaned rules that could create security vulnerabilities.
+
+The post-action cleanup:
+- ✓ Runs automatically — no explicit cleanup step needed
+- ✓ Executes on both success and failure (`always()`)
+- ✓ Gracefully handles already-deleted rules
+- ✓ Includes retry logic for transient failures
+- ✓ Logs comprehensive audit trail
+
+**Simple usage** — no cleanup configuration required:
 
 ```yaml
 - uses: bcgov/azure-lz-actions/actions/nsg-jit-rule@main
-  id: create-rule
   with:
     subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
     resource-group: 'my-rg'
@@ -152,10 +160,8 @@ The action supports automatic cleanup of created rules via post-action execution
     direction: 'Inbound'
     destination-prefix: '*'
 
-- name: Automatically revert NSG rule on completion
-  if: ${{ always() }}
-  run: |\n    # Use the outputs from the main action for cleanup
-    az network nsg rule delete \\\n      --resource-group \"${{ steps.create-rule.outputs.resource-group }}\" \\\n      --nsg-name \"${{ steps.create-rule.outputs.nsg-name }}\" \\\n      --name \"${{ steps.create-rule.outputs.rule-name }}\"\n```
+# Cleanup happens automatically — no additional steps needed!
+```
 
 ### Input Validation
 

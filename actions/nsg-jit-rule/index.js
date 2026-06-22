@@ -405,6 +405,12 @@ async function run() {
     core.setOutput('status', 'created');
     core.setOutput('timestamp', new Date().toISOString());
     
+    // Export to environment for post-action cleanup
+    core.exportVariable('NSG_RULE_NAME', inputs.ruleName);
+    core.exportVariable('NSG_NAME', inputs.nsgName);
+    core.exportVariable('RESOURCE_GROUP', inputs.resourceGroup);
+    core.exportVariable('SUBSCRIPTION_ID', inputs.subscriptionId);
+    
     core.endGroup();
     
     core.startGroup('📝 Workflow Summary');
@@ -429,6 +435,19 @@ async function run() {
     core.error(`❌ Action failed: ${error.message}`);
     core.setOutput('status', 'failed');
     core.setOutput('error', error.message);
+    // Still export cleanup params even on failure so post-action can attempt cleanup
+    const inputs = {
+      subscriptionId: core.getInput('subscription-id', { required: false }),
+      resourceGroup: core.getInput('resource-group', { required: false }),
+      nsgName: core.getInput('nsg-name', { required: false }),
+      ruleName: core.getInput('rule-name', { required: false }),
+    };
+    if (inputs.ruleName && inputs.nsgName && inputs.resourceGroup) {
+      core.exportVariable('NSG_RULE_NAME', inputs.ruleName);
+      core.exportVariable('NSG_NAME', inputs.nsgName);
+      core.exportVariable('RESOURCE_GROUP', inputs.resourceGroup);
+      core.exportVariable('SUBSCRIPTION_ID', inputs.subscriptionId);
+    }
     core.setFailed(error.message);
   }
 }
