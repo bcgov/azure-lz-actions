@@ -71,6 +71,7 @@ Runtime dependencies are bundled in the committed action distribution, so no `np
 | --- | --- | --- |
 | `source-address-prefix` | Source address prefix for the rule | `*` |
 | `priority` | Rule priority (`100-4096`, auto-assigned if omitted) | Auto |
+| `cleanup-enabled` | Whether post-action cleanup should delete the rule (`true`/`false`) | `true` |
 
 ## Outputs
 
@@ -87,6 +88,9 @@ Runtime dependencies are bundled in the committed action distribution, so no `np
 | `post-state` | NSG state after rule creation |
 | `status` | Action status |
 | `timestamp` | Operation timestamp (ISO 8601) |
+| `operation-id` | Correlation ID for action and cleanup logs |
+| `github-run-id` | GitHub workflow run ID |
+| `github-run-attempt` | GitHub workflow run attempt number |
 | `error` | Error message (only set on failure) |
 
 ## Authentication
@@ -144,6 +148,14 @@ Cleanup is built in and runs as a post-action (`post-if: always()`).
 - No explicit cleanup step is required.
 - Cleanup executes on success and failure.
 - Missing or already-deleted rules are handled gracefully.
+
+If you need to retain the rule after workflow completion, set:
+
+```yaml
+cleanup-enabled: 'false'
+```
+
+The action writes a GitHub Job Summary for both create and cleanup phases.
 
 ## Troubleshooting
 

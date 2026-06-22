@@ -110,9 +110,11 @@ async function verifyCleanup(resourceGroup, nsgName, ruleName, maxAttempts = 5) 
  */
 async function cleanup() {
   const startTime = Date.now();
+  const operationId = process.env.NSG_OPERATION_ID || 'unknown';
   const cleanupLog = {
     start_time: new Date().toISOString(),
-    action: 'nsg-jit-rule-cleanup'
+    action: 'nsg-jit-rule-cleanup',
+    operation_id: operationId
   };
 
   try {
@@ -123,6 +125,21 @@ async function cleanup() {
     const nsgName = process.env.NSG_NAME;
     const resourceGroup = process.env.RESOURCE_GROUP;
     const subscriptionId = process.env.SUBSCRIPTION_ID;
+    const cleanupEnabled = (process.env.NSG_CLEANUP_ENABLED || 'true').toLowerCase() === 'true';
+
+    if (!cleanupEnabled) {
+      core.warning('Cleanup explicitly disabled by input. Rule will be retained.');
+      await core.summary
+        .addHeading('NSG JIT Rule Cleanup Skipped')
+        .addTable([
+          [{ data: 'Property', header: true }, { data: 'Value', header: true }],
+          ['Operation ID', operationId],
+          ['Reason', 'cleanup-enabled input set to false']
+        ])
+        .write();
+      core.endGroup();
+      return;
+    }
 
     // If no parameters set, this is likely a manual post-action execution without prior main action
     if (!ruleName || !nsgName || !resourceGroup) {
@@ -155,16 +172,19 @@ async function cleanup() {
     core.startGroup('📋 Cleanup Summary');
 
     const duration = Math.round((Date.now() - startTime) / 1000);
-    const summary = `## ✅ NSG JIT Rule Cleanup Complete\n\n` +
-      `| Property | Value |\n` +
-      `|----------|-------|\n` +
-      `| Rule Name | ${ruleName} |\n` +
-      `| NSG | ${nsgName} |\n` +
-      `| Resource Group | ${resourceGroup} |\n` +
-      `| Duration | ${duration}s |\n` +
-      `| Status | Removed |\n`;
+    await core.summary
+      .addHeading('NSG JIT Rule Cleanup Complete')
+      .addTable([
+        [{ data: 'Property', header: true }, { data: 'Value', header: true }],
+        ['Operation ID', operationId],
+        ['Rule Name', ruleName],
+        ['NSG', nsgName],
+        ['Resource Group', resourceGroup],
+        ['Duration', `${duration}s`],
+        ['Status', 'Removed']
+      ])
+      .write();
 
-    core.info(summary);
     cleanupLog.status = 'success';
     cleanupLog.duration_ms = Date.now() - startTime;
     cleanupLog.rule_removed = ruleName;

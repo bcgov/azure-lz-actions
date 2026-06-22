@@ -40,6 +40,27 @@ jobs:
 No dependency installation step is required in workflows.
 Runtime dependencies are bundled into the committed distribution files.
 
+## Optional Behavior
+
+Disable automatic post-action cleanup when you intentionally want to retain the rule:
+
+```yaml
+- name: Create NSG JIT Rule
+  uses: bcgov/azure-lz-actions/actions/nsg-jit-rule@main
+  with:
+    subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    resource-group: my-rg
+    nsg-name: my-nsg
+    rule-name: jit-rdp-access
+    destination-ports: 3389
+    protocol: Tcp
+    direction: Inbound
+    destination-prefix: '*'
+    cleanup-enabled: 'false'
+```
+
+Use outputs `operation-id`, `github-run-id`, and `github-run-attempt` for audit correlation.
+
 ## Troubleshooting
 
 ### Cannot find distribution file (dist/index.js)

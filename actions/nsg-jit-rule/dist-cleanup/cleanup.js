@@ -1,10 +1,6 @@
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
-  try {
-    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
-  } catch (e) {
-    throw mod = 0, e;
-  }
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
 
 // node_modules/@actions/core/lib/utils.js
@@ -19854,9 +19850,11 @@ async function verifyCleanup(resourceGroup, nsgName, ruleName, maxAttempts = 5) 
 }
 async function cleanup() {
   const startTime = Date.now();
+  const operationId = process.env.NSG_OPERATION_ID || "unknown";
   const cleanupLog = {
     start_time: (/* @__PURE__ */ new Date()).toISOString(),
-    action: "nsg-jit-rule-cleanup"
+    action: "nsg-jit-rule-cleanup",
+    operation_id: operationId
   };
   try {
     core.startGroup("\u{1F9F9} Cleanup: Reverting NSG Rule");
@@ -19864,6 +19862,17 @@ async function cleanup() {
     const nsgName = process.env.NSG_NAME;
     const resourceGroup = process.env.RESOURCE_GROUP;
     const subscriptionId = process.env.SUBSCRIPTION_ID;
+    const cleanupEnabled = (process.env.NSG_CLEANUP_ENABLED || "true").toLowerCase() === "true";
+    if (!cleanupEnabled) {
+      core.warning("Cleanup explicitly disabled by input. Rule will be retained.");
+      await core.summary.addHeading("NSG JIT Rule Cleanup Skipped").addTable([
+        [{ data: "Property", header: true }, { data: "Value", header: true }],
+        ["Operation ID", operationId],
+        ["Reason", "cleanup-enabled input set to false"]
+      ]).write();
+      core.endGroup();
+      return;
+    }
     if (!ruleName || !nsgName || !resourceGroup) {
       core.warning("Cleanup parameters not set. Cleanup skipped.");
       core.info("This post-action should only run after nsg-jit-rule main action.");
@@ -19886,17 +19895,15 @@ async function cleanup() {
     core.endGroup();
     core.startGroup("\u{1F4CB} Cleanup Summary");
     const duration = Math.round((Date.now() - startTime) / 1e3);
-    const summary = `## \u2705 NSG JIT Rule Cleanup Complete
-
-| Property | Value |
-|----------|-------|
-| Rule Name | ${ruleName} |
-| NSG | ${nsgName} |
-| Resource Group | ${resourceGroup} |
-| Duration | ${duration}s |
-| Status | Removed |
-`;
-    core.info(summary);
+    await core.summary.addHeading("NSG JIT Rule Cleanup Complete").addTable([
+      [{ data: "Property", header: true }, { data: "Value", header: true }],
+      ["Operation ID", operationId],
+      ["Rule Name", ruleName],
+      ["NSG", nsgName],
+      ["Resource Group", resourceGroup],
+      ["Duration", `${duration}s`],
+      ["Status", "Removed"]
+    ]).write();
     cleanupLog.status = "success";
     cleanupLog.duration_ms = Date.now() - startTime;
     cleanupLog.rule_removed = ruleName;

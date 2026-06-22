@@ -62,6 +62,7 @@ jobs:
           protocol: ${{ inputs.protocol }}
           direction: ${{ inputs.direction }}
           destination-prefix: ${{ inputs.destination_prefix }}
+          cleanup-enabled: 'true'
 
       - name: Display Rule Creation Results
         shell: bash
@@ -76,6 +77,8 @@ jobs:
             Resource Group: ${{ steps.nsg_rule.outputs.resource-group }}
             Status: ${{ steps.nsg_rule.outputs.status }}
             Timestamp: ${{ steps.nsg_rule.outputs.timestamp }}
+            Operation ID: ${{ steps.nsg_rule.outputs.operation-id }}
+            Run ID/Attempt: ${{ steps.nsg_rule.outputs.github-run-id }}/${{ steps.nsg_rule.outputs.github-run-attempt }}
 
           NOTE: The rule will be automatically deleted when this job completes
                 (via post-action cleanup).

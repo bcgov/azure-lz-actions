@@ -37,6 +37,10 @@ inputs:
   priority:
     description: 'Rule priority (100-4096)'
     required: false
+  cleanup-enabled:
+    description: 'Enable post-action cleanup of the created NSG rule (true/false)'
+    required: false
+    default: 'true'
 
 outputs:
   rule-id:
@@ -61,6 +65,12 @@ outputs:
     description: 'Operation status (created, failed, etc.)'
   timestamp:
     description: 'ISO 8601 timestamp of operation'
+  operation-id:
+    description: 'Correlation ID for this action execution'
+  github-run-id:
+    description: 'GitHub run ID for this action execution'
+  github-run-attempt:
+    description: 'GitHub run attempt number for this action execution'
   error:
     description: 'Error message if operation failed (only set on failure)'
 

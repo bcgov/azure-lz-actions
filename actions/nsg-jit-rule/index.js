@@ -18,10 +18,9 @@
  */
 
 const core = require('@actions/core');
-const github = require('@actions/github');
+const crypto = require('crypto');
 const { execSync } = require('child_process');
 const { DefaultAzureCredential } = require('@azure/identity');
-const { NetworkManagementClient } = require('@azure/arm-network');
 
 // Constants
 const MAX_RETRIES = 3;
@@ -30,6 +29,64 @@ const PRIORITY_MIN = 100;
 const PRIORITY_MAX = 4096;
 const VALID_PROTOCOLS = ['TCP', 'UDP', '*'];
 const VALID_DIRECTIONS = ['Inbound', 'Outbound'];
+
+function toBoolean(value, defaultValue = true) {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    return defaultValue;
+  }
+  return String(value).trim().toLowerCase() === 'true';
+}
+
+function buildExecutionContext(operationId) {
+  return {
+    operation_id: operationId,
+    run_id: process.env.GITHUB_RUN_ID || '',
+    run_attempt: process.env.GITHUB_RUN_ATTEMPT || '',
+    actor: process.env.GITHUB_ACTOR || '',
+    repository: process.env.GITHUB_REPOSITORY || '',
+    workflow: process.env.GITHUB_WORKFLOW || ''
+  };
+}
+
+function logWithContext(level, message, execution) {
+  const prefix = `[op=${execution.operation_id} run=${execution.run_id}/${execution.run_attempt}]`;
+  core[level](`${prefix} ${message}`);
+}
+
+async function writeSuccessSummary(inputs, sourceIP, duration, execution) {
+  await core.summary
+    .addHeading('NSG JIT Rule Created')
+    .addTable([
+      [{ data: 'Property', header: true }, { data: 'Value', header: true }],
+      ['Operation ID', execution.operation_id],
+      ['Run ID / Attempt', `${execution.run_id} / ${execution.run_attempt}`],
+      ['Rule Name', inputs.ruleName],
+      ['NSG', inputs.nsgName],
+      ['Resource Group', inputs.resourceGroup],
+      ['Source IP', `${sourceIP}/32`],
+      ['Destination Ports', inputs.destinationPorts],
+      ['Protocol', inputs.protocol],
+      ['Priority', inputs.priority],
+      ['Cleanup Enabled', String(inputs.cleanupEnabled)],
+      ['Duration', `${duration}s`]
+    ])
+    .addRaw('Rule cleanup is managed by the action post-step.')
+    .write();
+}
+
+async function writeFailureSummary(errorMessage, phase, execution) {
+  await core.summary
+    .addHeading('NSG JIT Rule Failed')
+    .addTable([
+      [{ data: 'Property', header: true }, { data: 'Value', header: true }],
+      ['Operation ID', execution.operation_id],
+      ['Run ID / Attempt', `${execution.run_id} / ${execution.run_attempt}`],
+      ['Phase', phase],
+      ['Error', errorMessage]
+    ])
+    .addRaw('Suggested checks: OIDC auth, subscription context, resource-group/NSG existence, and RBAC role assignments.')
+    .write();
+}
 
 /**
  * Retry wrapper with exponential backoff
@@ -171,7 +228,7 @@ async function verifyAzureContext(credential, subscriptionId) {
 /**
  * Check if resource group exists
  */
-async function verifyResourceGroup(networkClient, resourceGroup) {
+async function verifyResourceGroup(resourceGroup) {
   try {
     core.debug(`Verifying resource group exists: ${resourceGroup}`);
     // Validate resource group existence via Azure CLI to avoid SDK private internals.
@@ -291,8 +348,10 @@ function generateAuditLog(inputs, sourceIP, rule) {
   return {
     timestamp: new Date().toISOString(),
     action: 'nsg-jit-rule-created',
+    operation_id: inputs.operationId,
     github: {
       run_id: process.env.GITHUB_RUN_ID,
+      run_attempt: process.env.GITHUB_RUN_ATTEMPT,
       actor: process.env.GITHUB_ACTOR,
       repository: process.env.GITHUB_REPOSITORY,
       workflow: process.env.GITHUB_WORKFLOW,
@@ -322,10 +381,15 @@ function generateAuditLog(inputs, sourceIP, rule) {
  */
 async function run() {
   const startTime = Date.now();
-  const auditLog = { start_time: new Date().toISOString() };
+  const operationId = crypto.randomUUID();
+  const execution = buildExecutionContext(operationId);
+  let failurePhase = 'startup';
 
   try {
+    logWithContext('info', 'Starting NSG JIT rule action', execution);
+
     core.startGroup('📋 Input Validation');
+    failurePhase = 'input-validation';
 
     // Extract and validate inputs
     const inputs = {
@@ -339,6 +403,8 @@ async function run() {
       destinationPrefix: core.getInput('destination-prefix', { required: true }),
       sourceAddressPrefix: core.getInput('source-address-prefix') || '*',
       priority: core.getInput('priority') || '3000',
+      cleanupEnabled: toBoolean(core.getInput('cleanup-enabled')),
+      operationId,
     };
 
     // Validate all inputs
@@ -351,18 +417,19 @@ async function run() {
     core.endGroup();
 
     core.startGroup('🔐 Azure Authentication');
+    failurePhase = 'azure-authentication';
 
     // Initialize Azure client and verify context
     const credential = new DefaultAzureCredential();
-    const networkClient = new NetworkManagementClient(credential, inputs.subscriptionId);
     await verifyAzureContext(credential, inputs.subscriptionId);
 
     core.endGroup();
 
     core.startGroup('🔍 Pre-flight Validation');
+    failurePhase = 'preflight-validation';
 
     // Verify resource group and NSG exist
-    await verifyResourceGroup(networkClient, inputs.resourceGroup);
+    await verifyResourceGroup(inputs.resourceGroup);
     const nsgState = await getNSGState(inputs.resourceGroup, inputs.nsgName);
     core.info(`NSG verified: ${nsgState.name} (Location: ${nsgState.location})`);
 
@@ -375,6 +442,7 @@ async function run() {
     core.endGroup();
 
     core.startGroup('🏃 Runner IP Resolution');
+    failurePhase = 'runner-ip-resolution';
 
     // Get runner IP
     const sourceIP = getRunnerPrivateIP();
@@ -383,6 +451,7 @@ async function run() {
     core.endGroup();
 
     core.startGroup('🚀 Creating NSG Rule');
+    failurePhase = 'rule-create';
 
     // Create rule with retry logic
     const rule = await retryWithBackoff(
@@ -399,10 +468,11 @@ async function run() {
     core.endGroup();
 
     core.startGroup('📊 Setting Outputs');
+    failurePhase = 'outputs';
 
     // Generate and log audit trail
     const audit = generateAuditLog(inputs, sourceIP, rule);
-    core.info(`Audit log: ${JSON.stringify(audit)}`);
+    logWithContext('info', `Audit log: ${JSON.stringify(audit)}`, execution);
 
     // Set outputs for subsequent steps and cleanup
     core.setOutput('rule-id', rule.id);
@@ -416,50 +486,47 @@ async function run() {
     core.setOutput('post-state', JSON.stringify(verifiedRule));
     core.setOutput('status', 'created');
     core.setOutput('timestamp', new Date().toISOString());
+    core.setOutput('operation-id', execution.operation_id);
+    core.setOutput('github-run-id', execution.run_id);
+    core.setOutput('github-run-attempt', execution.run_attempt);
 
     // Export to environment for post-action cleanup
     core.exportVariable('NSG_RULE_NAME', inputs.ruleName);
     core.exportVariable('NSG_NAME', inputs.nsgName);
     core.exportVariable('RESOURCE_GROUP', inputs.resourceGroup);
     core.exportVariable('SUBSCRIPTION_ID', inputs.subscriptionId);
+    core.exportVariable('NSG_CLEANUP_ENABLED', String(inputs.cleanupEnabled));
+    core.exportVariable('NSG_OPERATION_ID', execution.operation_id);
 
     core.endGroup();
 
-    core.startGroup('📝 Workflow Summary');
     const duration = Math.round((Date.now() - startTime) / 1000);
-    const summary = `## ✅ NSG JIT Rule Created\n\n` +
-      `| Property | Value |\n` +
-      `|----------|-------|\n` +
-      `| Rule Name | ${inputs.ruleName} |\n` +
-      `| NSG | ${inputs.nsgName} |\n` +
-      `| Resource Group | ${inputs.resourceGroup} |\n` +
-      `| Source IP | ${sourceIP}/32 |\n` +
-      `| Destination Ports | ${inputs.destinationPorts} |\n` +
-      `| Protocol | ${inputs.protocol} |\n` +
-      `| Priority | ${inputs.priority} |\n` +
-      `| Duration | ${duration}s |\n\n` +
-      `**Note:** Rule will be automatically cleaned up by post-action.`;
-
-    core.info(summary);
-    core.endGroup();
+    await writeSuccessSummary(inputs, sourceIP, duration, execution);
 
   } catch (error) {
-    core.error(`❌ Action failed: ${error.message}`);
+    logWithContext('error', `❌ Action failed: ${error.message}`, execution);
     core.setOutput('status', 'failed');
     core.setOutput('error', error.message);
+    core.setOutput('operation-id', execution.operation_id);
+    core.setOutput('github-run-id', execution.run_id);
+    core.setOutput('github-run-attempt', execution.run_attempt);
     // Still export cleanup params even on failure so post-action can attempt cleanup
     const inputs = {
       subscriptionId: core.getInput('subscription-id', { required: false }),
       resourceGroup: core.getInput('resource-group', { required: false }),
       nsgName: core.getInput('nsg-name', { required: false }),
       ruleName: core.getInput('rule-name', { required: false }),
+      cleanupEnabled: toBoolean(core.getInput('cleanup-enabled')),
     };
     if (inputs.ruleName && inputs.nsgName && inputs.resourceGroup) {
       core.exportVariable('NSG_RULE_NAME', inputs.ruleName);
       core.exportVariable('NSG_NAME', inputs.nsgName);
       core.exportVariable('RESOURCE_GROUP', inputs.resourceGroup);
       core.exportVariable('SUBSCRIPTION_ID', inputs.subscriptionId);
+      core.exportVariable('NSG_CLEANUP_ENABLED', String(inputs.cleanupEnabled));
+      core.exportVariable('NSG_OPERATION_ID', execution.operation_id);
     }
+    await writeFailureSummary(error.message, failurePhase, execution);
     core.setFailed(error.message);
   }
 }
