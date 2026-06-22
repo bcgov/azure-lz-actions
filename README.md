@@ -10,7 +10,8 @@ This repository contains reusable GitHub Actions for common Azure infrastructure
 
 ### Available Actions
 
-- **[nsg-jit-rule](./actions/nsg-jit-rule)** — Create or update Network Security Group (NSG) just-in-time access rules for temporary, secure resource access.
+- **[nsg-jit-rule](./actions/nsg-jit-rule)** — Create or update Network Security
+  Group (NSG) just-in-time access rules for temporary, secure resource access.
 
 ## Repository Structure
 
@@ -30,7 +31,8 @@ azure-lz-actions/
 
 ## Usage
 
-Each action can be used independently in your GitHub workflows. See the individual action's README for detailed usage instructions and examples.
+Each action can be used independently in your GitHub workflows. See the
+individual action's README for detailed usage instructions and examples.
 
 ### General Pattern
 
@@ -42,7 +44,8 @@ Each action can be used independently in your GitHub workflows. See the individu
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines on:
+We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for
+guidelines on:
 
 - Proposing new actions
 - Reporting issues
@@ -55,10 +58,14 @@ Please review our [Code of Conduct](./CODE_OF_CONDUCT.md) to understand communit
 
 ## License
 
-Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0. You may not use this file
+except in compliance with the License. You may obtain a copy of the License at
 
 ```
 http://www.apache.org/licenses/LICENSE-2.0
 ```
 
-Unless required to applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.

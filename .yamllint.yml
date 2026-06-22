@@ -34,15 +34,8 @@ rules:
   document-start: disable
   document-end: disable
 
-  # Multiple documents in single file (disabled for workflows)
-  multi-document-start: disable
-
-  # Trailing spaces
-  trailing-spaces: enable
-
   # Truthy values (yes/no should be quoted)
   truthy:
-    allowed: ['true', 'false']
     check-keys: true
 
   # Brackets
@@ -60,9 +53,3 @@ rules:
 
   # Keys sorting (not enforced - order matters in GitHub Actions)
   key-ordering: disable
-
-  # No tabs
-  no-tabs: enable
-
-  # Spaces instead of tabs
-  spaces: enable

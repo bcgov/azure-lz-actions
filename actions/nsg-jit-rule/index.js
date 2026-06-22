@@ -1,10 +1,10 @@
 /**
  * NSG JIT Rule GitHub Action
- * 
- * This action creates or updates a Network Security Group (NSG) just-in-time (JIT) 
- * access rule in Azure. It manages the lifecycle of temporary access rules for 
+ *
+ * This action creates or updates a Network Security Group (NSG) just-in-time (JIT)
+ * access rule in Azure. It manages the lifecycle of temporary access rules for
  * security and compliance purposes.
- * 
+ *
  * Enterprise Features:
  * - Input validation with detailed error messages
  * - Retry logic with exponential backoff for transient failures
@@ -12,7 +12,7 @@
  * - Structured audit logging
  * - Safe cleanup integration
  * - Idempotency support
- * 
+ *
  * @author BC Government
  * @version 1.0.0
  */
@@ -41,14 +41,14 @@ async function retryWithBackoff(fn, context = '') {
       return await fn();
     } catch (error) {
       lastError = error;
-      const isTransient = error.code === 'RequestTimeout' || 
+      const isTransient = error.code === 'RequestTimeout' ||
                          error.code === 'ServiceUnavailable' ||
                          error.message?.includes('timeout');
-      
+
       if (!isTransient || attempt === MAX_RETRIES) {
         throw error;
       }
-      
+
       const backoffMs = INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
       core.warning(`${context} failed (attempt ${attempt}/${MAX_RETRIES}), retrying in ${backoffMs}ms: ${error.message}`);
       await new Promise(resolve => setTimeout(resolve, backoffMs));
@@ -62,37 +62,37 @@ async function retryWithBackoff(fn, context = '') {
  */
 function validateInputs(inputs) {
   const errors = [];
-  
+
   // Validate subscription ID (UUID format)
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(inputs.subscriptionId)) {
     errors.push('Invalid subscription ID format (must be UUID)');
   }
-  
+
   // Validate resource group name
   if (!/^[a-zA-Z0-9._()-]{1,90}$/.test(inputs.resourceGroup)) {
     errors.push('Invalid resource group name (alphanumeric, dots, underscores, hyphens only, 1-90 chars)');
   }
-  
+
   // Validate NSG name
   if (!/^[a-zA-Z0-9._()-]{1,80}$/.test(inputs.nsgName)) {
     errors.push('Invalid NSG name (alphanumeric, dots, underscores, hyphens only, 1-80 chars)');
   }
-  
+
   // Validate rule name
   if (!/^[a-zA-Z0-9._()-]{1,80}$/.test(inputs.ruleName)) {
     errors.push('Invalid rule name (alphanumeric, dots, underscores, hyphens only, 1-80 chars)');
   }
-  
+
   // Validate protocol
   if (!VALID_PROTOCOLS.includes(inputs.protocol.toUpperCase())) {
     errors.push(`Invalid protocol: ${inputs.protocol}. Must be one of: ${VALID_PROTOCOLS.join(', ')}`);
   }
-  
+
   // Validate direction
   if (!VALID_DIRECTIONS.includes(inputs.direction)) {
     errors.push(`Invalid direction: ${inputs.direction}. Must be 'Inbound' or 'Outbound'`);
   }
-  
+
   // Validate priority if provided
   if (inputs.priority) {
     const p = parseInt(inputs.priority, 10);
@@ -100,26 +100,26 @@ function validateInputs(inputs) {
       errors.push(`Invalid priority: ${inputs.priority}. Must be number between ${PRIORITY_MIN}-${PRIORITY_MAX}`);
     }
   }
-  
+
   // Validate ports format
   if (inputs.destinationPorts !== '*' && !/^([0-9]{1,5}(-[0-9]{1,5})?(,[0-9]{1,5}(-[0-9]{1,5})?)*)$/.test(inputs.destinationPorts)) {
     errors.push('Invalid destination ports format. Use single port, range (80-443), or comma-separated list');
   }
-  
+
   // Validate CIDR formats
   const validateCIDR = (cidr) => {
     if (cidr === '*') return true;
     return /^([0-9]{1,3}\.){3}[0-9]{1,3}(\/([0-9]|[1-2][0-9]|3[0-2]))?$/.test(cidr);
   };
-  
+
   if (!validateCIDR(inputs.sourceAddressPrefix)) {
     errors.push(`Invalid source address prefix CIDR: ${inputs.sourceAddressPrefix}`);
   }
-  
+
   if (!validateCIDR(inputs.destinationPrefix)) {
     errors.push(`Invalid destination prefix CIDR: ${inputs.destinationPrefix}`);
   }
-  
+
   return errors;
 }
 
@@ -134,7 +134,7 @@ function getRunnerPrivateIP() {
       "ip -4 route get 1.1.1.1 | awk '{for (i=1;i<=NF;i++) if ($i==\"src\") {print $(i+1); exit}}'",
       { encoding: 'utf8' }
     ).trim();
-    
+
     if (/^([0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip)) {
       core.info(`Resolved runner private IP: ${ip}`);
       return ip;
@@ -142,13 +142,13 @@ function getRunnerPrivateIP() {
   } catch (error) {
     core.warning(`Failed to resolve runner IP from routing table: ${error.message}`);
   }
-  
+
   // Fallback to environment variable if set
   if (process.env.RUNNER_PRIVATE_IP) {
     core.debug(`Using RUNNER_PRIVATE_IP from environment: ${process.env.RUNNER_PRIVATE_IP}`);
     return process.env.RUNNER_PRIVATE_IP;
   }
-  
+
   throw new Error('Failed to resolve runner private IP. Set RUNNER_PRIVATE_IP environment variable.');
 }
 
@@ -176,7 +176,7 @@ async function verifyResourceGroup(networkClient, resourceGroup) {
     core.debug(`Verifying resource group exists: ${resourceGroup}`);
     // Use list API as a permission check
     await retryWithBackoff(async () => {
-      const client = networkClient._config.credentials ? networkClient : 
+      const client = networkClient._config.credentials ? networkClient :
                      new (require('@azure/arm-network')).NetworkManagementClient(networkClient._config.credentials, networkClient._config.subscriptionId);
       // List NSGs in RG - this validates RG exists and we have permissions
       return true; // Simplified validation
@@ -228,10 +228,10 @@ async function createOrUpdateRule(inputs, sourceIP) {
   try {
     core.info(`Creating NSG rule: ${inputs.ruleName}`);
     core.debug(`Rule configuration: direction=${inputs.direction}, protocol=${inputs.protocol}, ports=${inputs.destinationPorts}, source=${sourceIP}/32`);
-    
+
     const ruleName = inputs.ruleName;
     const sourceCIDR = `${sourceIP}/32`;
-    
+
     const output = execSync(
       `az network nsg rule create ` +
       `--resource-group "${inputs.resourceGroup}" ` +
@@ -247,7 +247,7 @@ async function createOrUpdateRule(inputs, sourceIP) {
       `--query '{id:id, name:name, priority:priority, direction:direction, sourceAddressPrefix:sourceAddressPrefix}' -o json`,
       { encoding: 'utf8' }
     );
-    
+
     const rule = JSON.parse(output);
     core.info(`✓ NSG rule created successfully: ${ruleName}`);
     return rule;
@@ -311,10 +311,10 @@ function generateAuditLog(inputs, sourceIP, rule) {
 async function run() {
   const startTime = Date.now();
   const auditLog = { start_time: new Date().toISOString() };
-  
+
   try {
     core.startGroup('📋 Input Validation');
-    
+
     // Extract and validate inputs
     const inputs = {
       subscriptionId: core.getInput('subscription-id', { required: true }),
@@ -328,7 +328,7 @@ async function run() {
       sourceAddressPrefix: core.getInput('source-address-prefix') || '*',
       priority: core.getInput('priority') || '3000',
     };
-    
+
     // Validate all inputs
     const validationErrors = validateInputs(inputs);
     if (validationErrors.length > 0) {
@@ -337,61 +337,61 @@ async function run() {
     }
     core.info('✓ All inputs validated');
     core.endGroup();
-    
+
     core.startGroup('🔐 Azure Authentication');
-    
+
     // Initialize Azure client and verify context
     const credential = new DefaultAzureCredential();
     const networkClient = new NetworkManagementClient(credential, inputs.subscriptionId);
     await verifyAzureContext(credential, inputs.subscriptionId);
-    
+
     core.endGroup();
-    
+
     core.startGroup('🔍 Pre-flight Validation');
-    
+
     // Verify resource group and NSG exist
     await verifyResourceGroup(networkClient, inputs.resourceGroup);
     const nsgState = await getNSGState(inputs.resourceGroup, inputs.nsgName);
     core.info(`NSG verified: ${nsgState.name} (Location: ${nsgState.location})`);
-    
+
     // Check for existing/stale rules
     const existingRules = await checkExistingRules(inputs.resourceGroup, inputs.nsgName, inputs.ruleName);
     if (existingRules.length > 0) {
       core.warning(`Found ${existingRules.length} existing rule(s) matching pattern: ${existingRules.map(r => r.name).join(', ')}`);
     }
-    
+
     core.endGroup();
-    
+
     core.startGroup('🏃 Runner IP Resolution');
-    
+
     // Get runner IP
     const sourceIP = getRunnerPrivateIP();
     core.info(`Runner will be source IP: ${sourceIP}/32`);
-    
+
     core.endGroup();
-    
+
     core.startGroup('🚀 Creating NSG Rule');
-    
+
     // Create rule with retry logic
     const rule = await retryWithBackoff(
       () => createOrUpdateRule(inputs, sourceIP),
       'NSG rule creation'
     );
-    
+
     // Verify rule creation
     const verifiedRule = await retryWithBackoff(
       () => verifyRuleCreation(inputs.resourceGroup, inputs.nsgName, inputs.ruleName),
       'Rule verification'
     );
-    
+
     core.endGroup();
-    
+
     core.startGroup('📊 Setting Outputs');
-    
+
     // Generate and log audit trail
     const audit = generateAuditLog(inputs, sourceIP, rule);
     core.info(`Audit log: ${JSON.stringify(audit)}`);
-    
+
     // Set outputs for subsequent steps and cleanup
     core.setOutput('rule-id', rule.id);
     core.setOutput('rule-name', inputs.ruleName);
@@ -404,15 +404,15 @@ async function run() {
     core.setOutput('post-state', JSON.stringify(verifiedRule));
     core.setOutput('status', 'created');
     core.setOutput('timestamp', new Date().toISOString());
-    
+
     // Export to environment for post-action cleanup
     core.exportVariable('NSG_RULE_NAME', inputs.ruleName);
     core.exportVariable('NSG_NAME', inputs.nsgName);
     core.exportVariable('RESOURCE_GROUP', inputs.resourceGroup);
     core.exportVariable('SUBSCRIPTION_ID', inputs.subscriptionId);
-    
+
     core.endGroup();
-    
+
     core.startGroup('📝 Workflow Summary');
     const duration = Math.round((Date.now() - startTime) / 1000);
     const summary = `## ✅ NSG JIT Rule Created\n\n` +
@@ -427,10 +427,10 @@ async function run() {
       `| Priority | ${inputs.priority} |\n` +
       `| Duration | ${duration}s |\n\n` +
       `**Note:** Rule will be automatically cleaned up by post-action.`;
-    
+
     core.info(summary);
     core.endGroup();
-    
+
   } catch (error) {
     core.error(`❌ Action failed: ${error.message}`);
     core.setOutput('status', 'failed');

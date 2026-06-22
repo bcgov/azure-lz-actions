@@ -8,9 +8,6 @@ default: true
 MD013:
   line_length: 120
   code_blocks: false
-  code_lines: false
-  headers: false
-  headers_length: 120
   stern: false
 
 # Allow MD003 (unordered list prefix) with consistent markers
@@ -39,6 +36,10 @@ MD040: false
 
 # MD041 - First line in file should be top level heading (not required for some files)
 MD041: false
+
+# MD060 - Table column alignment (use compact style for flexibility)
+MD060:
+  style: compact
 
 # Additional rules
 MD024: false  # Multiple headings with same content allowed

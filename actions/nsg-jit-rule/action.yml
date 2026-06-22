@@ -65,7 +65,7 @@ outputs:
     description: 'Error message if operation failed (only set on failure)'
 
 runs:
-  using: 'node22'
+  using: 'node24'
   main: 'index.js'
   post: 'cleanup.js'
   post-if: 'always()'

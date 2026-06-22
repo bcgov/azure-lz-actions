@@ -2,7 +2,8 @@
 
 Create or update a Network Security Group (NSG) just-in-time (JIT) access rule in Azure.
 
-This GitHub Action provides enterprise-grade management of temporary NSG rules for secure, time-limited access to Azure resources.
+This GitHub Action provides enterprise-grade management of temporary NSG rules for secure,
+time-limited access to Azure resources.
 
 ## Usage
 
@@ -40,8 +41,16 @@ jobs:
 
 ### Required
 
-| Input | Description | Example |
-|-------|-------------|---------|
+| Input                  | Description                                    | Example                              |
+| ---------------------- | ---------------------------------------------- | ------------------------------------ |
+| `subscription-id`      | Azure Subscription ID                          | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| `resource-group`       | Azure Resource Group name                      | `my-resource-group`                  |
+| `nsg-name`             | Network Security Group name                    | `my-nsg`                             |
+| `rule-name`            | Name for the JIT access rule                   | `jit-rdp-access`                     |
+| `destination-ports`    | Destination ports (comma-separated or range)   | `3389` or `80,443` or `1024-65535`   |
+| `protocol`             | Protocol (Tcp, Udp, or *)                      | `Tcp`                                |
+| `direction`            | Rule direction (Inbound or Outbound)           | `Inbound`                            |
+| `destination-prefix`   | Destination address prefix                     | `*` or `10.0.0.0/8`                  |
 | `subscription-id` | Azure Subscription ID | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
 | `resource-group` | Azure Resource Group name | `my-resource-group` |
 | `nsg-name` | Network Security Group name | `my-nsg` |
@@ -53,15 +62,22 @@ jobs:
 
 ### Optional
 
-| Input | Description | Default |
-|-------|-------------|---------|
+| Input                  | Description                                    | Default |
+| ---------------------- | ---------------------------------------------- | ------- |
+| `source-address-prefix` | Source address prefix for the rule             | `*`     |
+| `priority`             | Rule priority (100-4096, auto-assigned)        | Auto    |
 | `source-address-prefix` | Source address prefix for the rule | `*` |
 | `priority` | Rule priority (100-4096, auto-assigned if omitted) | Auto |
 
 ## Outputs
 
-| Output | Description |
-|--------|-------------|
+| Output      | Description                                   |
+| ----------- | --------------------------------------------- |
+| `rule-id`   | Resource ID of the created/updated NSG rule   |
+| `rule-name` | Name of the NSG rule                          |
+| `pre-state` | Previous state of the rule (if it existed)    |
+| `post-state` | Current state of the rule after the action    |
+| `status`    | Status of the operation (Created/Updated)     |
 | `rule-id` | Resource ID of the created/updated NSG rule |
 | `rule-name` | Name of the NSG rule |
 | `pre-state` | Previous state of the rule (if it existed) |
@@ -70,7 +86,8 @@ jobs:
 
 ## Authentication
 
-This action uses Azure Workload Identity Federation for authentication. Ensure your GitHub Actions workflow is configured with:
+This action uses Azure Workload Identity Federation for authentication. Ensure your GitHub
+Actions workflow is configured with:
 
 1. Azure Workload Identity OIDC provider configured
 2. Federated credentials set up for your GitHub organization
@@ -137,9 +154,12 @@ Microsoft.Network/networkSecurityGroups/read
 
 ### Automatic Cleanup (Built-in Post-Action)
 
-**No manual cleanup required.** This action automatically reverts NSG rules via a built-in post-action that executes after the main action completes, regardless of success or failure. This eliminates the risk of orphaned rules that could create security vulnerabilities.
+**No manual cleanup required.** This action automatically reverts NSG rules via a built-in
+post-action that executes after the main action completes, regardless of success or failure.
+This eliminates the risk of orphaned rules that could create security vulnerabilities.
 
 The post-action cleanup:
+
 - ✓ Runs automatically — no explicit cleanup step needed
 - ✓ Executes on both success and failure (`always()`)
 - ✓ Gracefully handles already-deleted rules
