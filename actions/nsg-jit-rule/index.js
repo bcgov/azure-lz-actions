@@ -174,12 +174,24 @@ async function verifyAzureContext(credential, subscriptionId) {
 async function verifyResourceGroup(networkClient, resourceGroup) {
   try {
     core.debug(`Verifying resource group exists: ${resourceGroup}`);
-    // Use list API as a permission check
+    // Validate resource group existence via Azure CLI to avoid SDK private internals.
     await retryWithBackoff(async () => {
-      const client = networkClient._config.credentials ? networkClient :
-                     new (require('@azure/arm-network')).NetworkManagementClient(networkClient._config.credentials, networkClient._config.subscriptionId);
-      // List NSGs in RG - this validates RG exists and we have permissions
-      return true; // Simplified validation
+      const existsOutput = execSync(
+        `az group exists --name "${resourceGroup}"`,
+        { encoding: 'utf8' }
+      ).trim().toLowerCase();
+
+      if (existsOutput !== 'true') {
+        throw new Error(`Resource group not found: ${resourceGroup}`);
+      }
+
+      // Permission check: list NSGs in the RG to ensure access to Network resources.
+      execSync(
+        `az network nsg list --resource-group "${resourceGroup}" --query "[].name" -o json`,
+        { encoding: 'utf8' }
+      );
+
+      return true;
     }, `Verify resource group ${resourceGroup}`);
     core.info(`Resource group verified: ${resourceGroup}`);
   } catch (error) {

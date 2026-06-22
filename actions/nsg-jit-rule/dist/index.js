@@ -18086,10 +18086,10 @@ var require_oidc_utils = __commonJS({
         return __awaiter2(this, void 0, void 0, function* () {
           const httpclient = _OidcClient.createHttpClient();
           const res = yield httpclient.getJson(id_token_url).catch((error) => {
-            throw new Error(`Failed to get ID Token. 
- 
+            throw new Error(`Failed to get ID Token.
+
         Error Code : ${error.statusCode}
- 
+
         Error Message: ${error.message}`);
           });
           const id_token = (_a = res.result) === null || _a === void 0 ? void 0 : _a.value;
@@ -41618,7 +41618,7 @@ var require_restError = __commonJS({
         } : void 0;
         Object.defineProperty(this, import_inspect.custom, {
           value: () => {
-            return `RestError: ${this.message} 
+            return `RestError: ${this.message}
  ${errorSanitizer.sanitize({
               ...this,
               request: { ...this.request, agent },
@@ -51341,8 +51341,8 @@ var require_workloadIdentityCredential = __commonJS({
        */
       async getToken(scopes, options) {
         if (!this.client) {
-          const errorMessage = `${credentialName}: is unavailable. tenantId, clientId, and federatedTokenFilePath are required parameters. 
-      In DefaultAzureCredential and ManagedIdentityCredential, these can be provided as environment variables - 
+          const errorMessage = `${credentialName}: is unavailable. tenantId, clientId, and federatedTokenFilePath are required parameters.
+      In DefaultAzureCredential and ManagedIdentityCredential, these can be provided as environment variables -
       "AZURE_TENANT_ID",
       "AZURE_CLIENT_ID",
       "AZURE_FEDERATED_TOKEN_FILE". See the troubleshooting guide for more information: https://aka.ms/azsdk/js/identity/workloadidentitycredential/troubleshoot`;
@@ -52973,12 +52973,12 @@ var require_azurePipelinesCredential = __commonJS({
        */
       async getToken(scopes, options) {
         if (!this.clientAssertionCredential) {
-          const errorMessage = `${credentialName}: is unavailable. To use Federation Identity in Azure Pipelines, the following parameters are required - 
+          const errorMessage = `${credentialName}: is unavailable. To use Federation Identity in Azure Pipelines, the following parameters are required -
       tenantId,
       clientId,
       serviceConnectionId,
       systemAccessToken,
-      "SYSTEM_OIDCREQUESTURI".      
+      "SYSTEM_OIDCREQUESTURI".
       See the troubleshooting guide for more information: https://aka.ms/azsdk/js/identity/azurepipelinescredential/troubleshoot`;
           logger.error(errorMessage);
           throw new errors_js_1.CredentialUnavailableError(errorMessage);
@@ -53038,7 +53038,7 @@ var require_azurePipelinesCredential = __commonJS({
         }
       } catch (e) {
         const errorDetails = `${credentialName}: Authentication Failed. oidcToken field not detected in the response.`;
-        logger.error(`Response from service = ${text}, Response Headers ["x-vss-e2eid"] = ${response.headers.get("x-vss-e2eid")} 
+        logger.error(`Response from service = ${text}, Response Headers ["x-vss-e2eid"] = ${response.headers.get("x-vss-e2eid")}
       and ["x-msedge-ref"] = ${response.headers.get("x-msedge-ref")}, error message = ${e.message}`);
         logger.error(errorDetails);
         throw new errors_js_1.AuthenticationError(response.status, {
@@ -148012,7 +148012,17 @@ async function verifyResourceGroup(networkClient, resourceGroup) {
   try {
     core.debug(`Verifying resource group exists: ${resourceGroup}`);
     await retryWithBackoff(async () => {
-      const client = networkClient._config.credentials ? networkClient : new (require_dist4()).NetworkManagementClient(networkClient._config.credentials, networkClient._config.subscriptionId);
+      const existsOutput = execSync(
+        `az group exists --name "${resourceGroup}"`,
+        { encoding: "utf8" }
+      ).trim().toLowerCase();
+      if (existsOutput !== "true") {
+        throw new Error(`Resource group not found: ${resourceGroup}`);
+      }
+      execSync(
+        `az network nsg list --resource-group "${resourceGroup}" --query "[].name" -o json`,
+        { encoding: "utf8" }
+      );
       return true;
     }, `Verify resource group ${resourceGroup}`);
     core.info(`Resource group verified: ${resourceGroup}`);
