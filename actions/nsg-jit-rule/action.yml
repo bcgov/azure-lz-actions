@@ -1,0 +1,55 @@
+name: 'NSG JIT Rule'
+description: 'Create or update a Network Security Group (NSG) just-in-time (JIT) access rule'
+author: 'BC Government'
+
+inputs:
+  subscription-id:
+    description: 'Azure Subscription ID'
+    required: true
+  resource-group:
+    description: 'Azure Resource Group name'
+    required: true
+  nsg-name:
+    description: 'Network Security Group name'
+    required: true
+  rule-name:
+    description: 'Name for the JIT access rule'
+    required: true
+  destination-ports:
+    description: 'Destination ports (comma-separated or range, e.g., "80,443" or "3389")'
+    required: true
+  protocol:
+    description: 'Protocol (Tcp, Udp, or *)'
+    required: true
+    default: 'Tcp'
+  direction:
+    description: 'Rule direction (Inbound or Outbound)'
+    required: true
+    default: 'Inbound'
+  destination-prefix:
+    description: 'Destination address prefix (e.g., "*" or specific IP/subnet)'
+    required: true
+    default: '*'
+  source-address-prefix:
+    description: 'Source address prefix for the rule'
+    required: false
+    default: '*'
+  priority:
+    description: 'Rule priority (100-4096)'
+    required: false
+
+outputs:
+  rule-id:
+    description: 'Resource ID of the created/updated NSG rule'
+  rule-name:
+    description: 'Name of the NSG rule'
+  pre-state:
+    description: 'Previous state of the rule (if it existed)'
+  post-state:
+    description: 'Current state of the rule after the action'
+  status:
+    description: 'Status of the operation (Created, Updated, or NoChange)'
+
+runs:
+  using: 'node20'
+  main: 'index.js'

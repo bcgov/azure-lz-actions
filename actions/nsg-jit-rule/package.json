@@ -1,0 +1,18 @@
+{
+  "name": "nsg-jit-rule",
+  "version": "1.0.0",
+  "description": "GitHub Action to create or update NSG just-in-time access rules",
+  "main": "index.js",
+  "author": "BC Government",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@actions/core": "^1.10.0",
+    "@actions/github": "^6.0.0",
+    "@azure/identity": "^4.0.0",
+    "@azure/arm-network": "^33.0.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "start": "node index.js"
+  }
+}
