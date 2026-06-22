@@ -8,11 +8,16 @@
   "dependencies": {
     "@actions/core": "^1.10.0",
     "@actions/github": "^6.0.0",
-    "@azure/identity": "^4.0.0",
-    "@azure/arm-network": "^33.0.0"
+    "@azure/arm-network": "^33.0.0",
+    "@azure/identity": "^4.0.0"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "esbuild": "^0.27.0",
+    "@vercel/ncc": "^0.44.0"
+  },
   "scripts": {
-    "start": "node index.js"
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=cjs --outfile=dist/index.js && esbuild cleanup.js --bundle --platform=node --target=node24 --format=cjs --outfile=dist-cleanup/cleanup.js",
+    "start": "node index.js",
+    "verify": "node -c index.js && node -c cleanup.js"
   }
 }

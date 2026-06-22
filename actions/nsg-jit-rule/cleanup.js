@@ -1,1 +1,193 @@
-/**\n * NSG JIT Rule Cleanup Post-Action\n * \n * Automatically reverts (deletes) NSG rules created by the nsg-jit-rule action.\n * This is designed to run as a post-action for automatic cleanup/garbage collection.\n * \n * Enterprise Features:\n * - Graceful handling of missing rules\n * - Cleanup verification\n * - Comprehensive audit logging\n * - Safe error recovery\n * \n * @author BC Government\n * @version 1.0.0\n */\n\nconst core = require('@actions/core');\nconst { execSync } = require('child_process');\n\nconst MAX_CLEANUP_RETRIES = 2;\n\n/**\n * Retry wrapper for cleanup operations\n */\nasync function retryCleanup(fn, context = '') {\n  let lastError;\n  for (let attempt = 1; attempt <= MAX_CLEANUP_RETRIES; attempt++) {\n    try {\n      return await fn();\n    } catch (error) {\n      lastError = error;\n      if (attempt < MAX_CLEANUP_RETRIES) {\n        const backoffMs = 500 * Math.pow(2, attempt - 1);\n        core.warning(`${context} attempt ${attempt} failed, retrying in ${backoffMs}ms: ${error.message}`);\n        await new Promise(resolve => setTimeout(resolve, backoffMs));\n      }\n    }\n  }\n  throw lastError;\n}\n\n/**\n * Delete NSG rule\n */\nasync function deleteRule(resourceGroup, nsgName, ruleName) {\n  try {\n    core.debug(`Attempting to delete rule: ${ruleName}`);\n    \n    execSync(\n      `az network nsg rule delete ` +\n      `--resource-group \"${resourceGroup}\" ` +\n      `--nsg-name \"${nsgName}\" ` +\n      `--name \"${ruleName}\" ` +\n      `--no-wait`,\n      { encoding: 'utf8' }\n    );\n    \n    core.info(`✓ Initiated deletion of rule: ${ruleName}`);\n  } catch (error) {\n    // If rule doesn't exist (404), that's OK - cleanup succeeded\n    if (error.message?.includes('NotFound') || error.message?.includes('does not exist')) {\n      core.info(`Rule already removed or doesn't exist: ${ruleName}`);\n      return;\n    }\n    throw error;\n  }\n}\n\n/**\n * Verify rule deletion\n */\nasync function verifyCleanup(resourceGroup, nsgName, ruleName, maxAttempts = 5) {\n  const startTime = Date.now();\n  const timeout = 60000; // 60 second timeout\n  \n  for (let attempt = 1; attempt <= maxAttempts; attempt++) {\n    try {\n      // Try to fetch the rule - if it fails with 404, cleanup is complete\n      execSync(\n        `az network nsg rule show --resource-group \"${resourceGroup}\" --nsg-name \"${nsgName}\" --name \"${ruleName}\" -o json`,\n        { encoding: 'utf8', stdio: 'pipe' }\n      );\n      \n      // Rule still exists, wait and retry\n      const elapsed = Date.now() - startTime;\n      if (elapsed > timeout) {\n        throw new Error(`Cleanup verification timeout after ${elapsed}ms`);\n      }\n      \n      const waitTime = Math.min(2000 * attempt, 10000);\n      core.debug(`Rule still exists (attempt ${attempt}/${maxAttempts}), waiting ${waitTime}ms...`);\n      await new Promise(resolve => setTimeout(resolve, waitTime));\n      \n    } catch (error) {\n      // Rule doesn't exist (404) = success\n      if (error.message?.includes('NotFound') || error.message?.includes('does not exist') || error.status === 404) {\n        core.info(`✓ Rule deletion verified: ${ruleName}`);\n        return true;\n      }\n      // If it's a different error, throw it\n      throw error;\n    }\n  }\n  \n  throw new Error(`Failed to verify rule deletion after ${maxAttempts} attempts`);\n}\n\n/**\n * Main cleanup entry point\n */\nasync function cleanup() {\n  const startTime = Date.now();\n  const cleanupLog = {\n    start_time: new Date().toISOString(),\n    action: 'nsg-jit-rule-cleanup'\n  };\n  \n  try {\n    core.startGroup('🧹 Cleanup: Reverting NSG Rule');\n    \n    // Extract cleanup parameters from environment (set by main action via outputs)\n    const ruleName = process.env.NSG_RULE_NAME;\n    const nsgName = process.env.NSG_NAME;\n    const resourceGroup = process.env.RESOURCE_GROUP;\n    const subscriptionId = process.env.SUBSCRIPTION_ID;\n    \n    // If no parameters set, this is likely a manual post-action execution without prior main action\n    if (!ruleName || !nsgName || !resourceGroup) {\n      core.warning('Cleanup parameters not set. Cleanup skipped.');\n      core.info('This post-action should only run after nsg-jit-rule main action.');\n      core.endGroup();\n      return;\n    }\n    \n    core.info(`Cleanup Configuration:`);\n    core.info(`  Rule Name: ${ruleName}`);\n    core.info(`  NSG: ${nsgName}`);\n    core.info(`  Resource Group: ${resourceGroup}`);\n    core.info(`  Subscription: ${subscriptionId}`);\n    \n    // Execute deletion with retry logic\n    await retryCleanup(\n      () => deleteRule(resourceGroup, nsgName, ruleName),\n      'Rule deletion'\n    );\n    \n    // Verify deletion\n    await retryCleanup(\n      () => verifyCleanup(resourceGroup, nsgName, ruleName),\n      'Cleanup verification'\n    );\n    \n    core.endGroup();\n    \n    core.startGroup('📋 Cleanup Summary');\n    \n    const duration = Math.round((Date.now() - startTime) / 1000);\n    const summary = `## ✅ NSG JIT Rule Cleanup Complete\\n\\n` +\n      `| Property | Value |\\n` +\n      `|----------|-------|\\n` +\n      `| Rule Name | ${ruleName} |\\n` +\n      `| NSG | ${nsgName} |\\n` +\n      `| Resource Group | ${resourceGroup} |\\n` +\n      `| Duration | ${duration}s |\\n` +\n      `| Status | Removed |\\n`;\n    \n    core.info(summary);\n    cleanupLog.status = 'success';\n    cleanupLog.duration_ms = Date.now() - startTime;\n    cleanupLog.rule_removed = ruleName;\n    \n    core.endGroup();\n    \n  } catch (error) {\n    core.error(`❌ Cleanup failed: ${error.message}`);\n    cleanupLog.status = 'error';\n    cleanupLog.error = error.message;\n    cleanupLog.duration_ms = Date.now() - startTime;\n    \n    // Don't fail the job on cleanup error - log it but let workflow complete\n    core.warning(`Cleanup encountered an error but workflow will continue. Please verify manual cleanup if needed.`);\n    core.warning(`Details: ${error.message}`);\n  }\n  \n  cleanupLog.end_time = new Date().toISOString();\n  core.debug(`Cleanup audit log: ${JSON.stringify(cleanupLog)}`);\n}\n\n// Execute cleanup\ncleanup().catch(error => {\n  // Extra safety net\n  core.error(`Cleanup action error: ${error.message}`);\n});\n
+/**
+ * NSG JIT Rule Cleanup Post-Action
+ *
+ * Automatically reverts (deletes) NSG rules created by the nsg-jit-rule action.
+ * This is designed to run as a post-action for automatic cleanup/garbage collection.
+ *
+ * Enterprise Features:
+ * - Graceful handling of missing rules
+ * - Cleanup verification
+ * - Comprehensive audit logging
+ * - Safe error recovery
+ *
+ * @author BC Government
+ * @version 1.0.0
+ */
+
+const core = require('@actions/core');
+const { execSync } = require('child_process');
+
+const MAX_CLEANUP_RETRIES = 2;
+
+/**
+ * Retry wrapper for cleanup operations
+ */
+async function retryCleanup(fn, context = '') {
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_CLEANUP_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < MAX_CLEANUP_RETRIES) {
+        const backoffMs = 500 * Math.pow(2, attempt - 1);
+        core.warning(`${context} attempt ${attempt} failed, retrying in ${backoffMs}ms: ${error.message}`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Delete NSG rule
+ */
+async function deleteRule(resourceGroup, nsgName, ruleName) {
+  try {
+    core.debug(`Attempting to delete rule: ${ruleName}`);
+
+    execSync(
+      `az network nsg rule delete ` +
+      `--resource-group "${resourceGroup}" ` +
+      `--nsg-name "${nsgName}" ` +
+      `--name "${ruleName}" ` +
+      `--no-wait`,
+      { encoding: 'utf8' }
+    );
+
+    core.info(`✓ Initiated deletion of rule: ${ruleName}`);
+  } catch (error) {
+    // If rule doesn't exist (404), that's OK - cleanup succeeded
+    if (error.message?.includes('NotFound') || error.message?.includes('does not exist')) {
+      core.info(`Rule already removed or doesn't exist: ${ruleName}`);
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Verify rule deletion
+ */
+async function verifyCleanup(resourceGroup, nsgName, ruleName, maxAttempts = 5) {
+  const startTime = Date.now();
+  const timeout = 60000; // 60 second timeout
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      // Try to fetch the rule - if it fails with 404, cleanup is complete
+      execSync(
+        `az network nsg rule show --resource-group "${resourceGroup}" --nsg-name "${nsgName}" --name "${ruleName}" -o json`,
+        { encoding: 'utf8', stdio: 'pipe' }
+      );
+
+      // Rule still exists, wait and retry
+      const elapsed = Date.now() - startTime;
+      if (elapsed > timeout) {
+        throw new Error(`Cleanup verification timeout after ${elapsed}ms`);
+      }
+
+      const waitTime = Math.min(2000 * attempt, 10000);
+      core.debug(`Rule still exists (attempt ${attempt}/${maxAttempts}), waiting ${waitTime}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+
+    } catch (error) {
+      // Rule doesn't exist (404) = success
+      if (error.message?.includes('NotFound') || error.message?.includes('does not exist') || error.status === 404) {
+        core.info(`✓ Rule deletion verified: ${ruleName}`);
+        return true;
+      }
+      // If it's a different error, throw it
+      throw error;
+    }
+  }
+
+  throw new Error(`Failed to verify rule deletion after ${maxAttempts} attempts`);
+}
+
+/**
+ * Main cleanup entry point
+ */
+async function cleanup() {
+  const startTime = Date.now();
+  const cleanupLog = {
+    start_time: new Date().toISOString(),
+    action: 'nsg-jit-rule-cleanup'
+  };
+
+  try {
+    core.startGroup('🧹 Cleanup: Reverting NSG Rule');
+
+    // Extract cleanup parameters from environment (set by main action via outputs)
+    const ruleName = process.env.NSG_RULE_NAME;
+    const nsgName = process.env.NSG_NAME;
+    const resourceGroup = process.env.RESOURCE_GROUP;
+    const subscriptionId = process.env.SUBSCRIPTION_ID;
+
+    // If no parameters set, this is likely a manual post-action execution without prior main action
+    if (!ruleName || !nsgName || !resourceGroup) {
+      core.warning('Cleanup parameters not set. Cleanup skipped.');
+      core.info('This post-action should only run after nsg-jit-rule main action.');
+      core.endGroup();
+      return;
+    }
+
+    core.info('Cleanup Configuration:');
+    core.info(`  Rule Name: ${ruleName}`);
+    core.info(`  NSG: ${nsgName}`);
+    core.info(`  Resource Group: ${resourceGroup}`);
+    core.info(`  Subscription: ${subscriptionId}`);
+
+    // Execute deletion with retry logic
+    await retryCleanup(
+      () => deleteRule(resourceGroup, nsgName, ruleName),
+      'Rule deletion'
+    );
+
+    // Verify deletion
+    await retryCleanup(
+      () => verifyCleanup(resourceGroup, nsgName, ruleName),
+      'Cleanup verification'
+    );
+
+    core.endGroup();
+
+    core.startGroup('📋 Cleanup Summary');
+
+    const duration = Math.round((Date.now() - startTime) / 1000);
+    const summary = `## ✅ NSG JIT Rule Cleanup Complete\n\n` +
+      `| Property | Value |\n` +
+      `|----------|-------|\n` +
+      `| Rule Name | ${ruleName} |\n` +
+      `| NSG | ${nsgName} |\n` +
+      `| Resource Group | ${resourceGroup} |\n` +
+      `| Duration | ${duration}s |\n` +
+      `| Status | Removed |\n`;
+
+    core.info(summary);
+    cleanupLog.status = 'success';
+    cleanupLog.duration_ms = Date.now() - startTime;
+    cleanupLog.rule_removed = ruleName;
+
+    core.endGroup();
+
+  } catch (error) {
+    core.error(`❌ Cleanup failed: ${error.message}`);
+    cleanupLog.status = 'error';
+    cleanupLog.error = error.message;
+    cleanupLog.duration_ms = Date.now() - startTime;
+
+    // Don't fail the job on cleanup error - log it but let workflow complete
+    core.warning('Cleanup encountered an error but workflow will continue. Please verify manual cleanup if needed.');
+    core.warning(`Details: ${error.message}`);
+  }
+
+  cleanupLog.end_time = new Date().toISOString();
+  core.debug(`Cleanup audit log: ${JSON.stringify(cleanupLog)}`);
+}
+
+// Execute cleanup
+cleanup().catch(error => {
+  // Extra safety net
+  core.error(`Cleanup action error: ${error.message}`);
+});

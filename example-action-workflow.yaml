@@ -1,0 +1,99 @@
+name: NSG JIT Rule Example
+
+on:
+  workflow_dispatch:
+    inputs:
+      azure_subscription_id:
+        description: Azure subscription ID
+        required: true
+      azure_resource_group:
+        description: Azure resource group name
+        required: true
+      azure_nsg_name:
+        description: NSG name
+        required: true
+      rule_name:
+        description: Name for the temporary rule
+        required: false
+        default: gha-temp-allow
+      destination_ports:
+        description: Destination ports
+        required: false
+        default: '3389'
+      protocol:
+        description: Protocol (Tcp, Udp, *)
+        required: false
+        default: Tcp
+      direction:
+        description: Direction (Inbound, Outbound)
+        required: false
+        default: Inbound
+      destination_prefix:
+        description: Destination address prefix
+        required: false
+        default: '*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  create-jit-rule:
+    name: Create NSG JIT Rule
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ inputs.azure_subscription_id }}
+
+      - name: Create NSG JIT Rule
+        id: nsg_rule
+        uses: bcgov/azure-lz-actions/actions/nsg-jit-rule@main
+        with:
+          subscription-id: ${{ inputs.azure_subscription_id }}
+          resource-group: ${{ inputs.azure_resource_group }}
+          nsg-name: ${{ inputs.azure_nsg_name }}
+          rule-name: ${{ inputs.rule_name }}-${{ github.run_id }}
+          destination-ports: ${{ inputs.destination_ports }}
+          protocol: ${{ inputs.protocol }}
+          direction: ${{ inputs.direction }}
+          destination-prefix: ${{ inputs.destination_prefix }}
+
+      - name: Display Rule Creation Results
+        shell: bash
+        run: |
+          cat <<EOF_OUT
+          NSG Rule Created Successfully
+
+          Rule Details:
+            Rule Name: ${{ steps.nsg_rule.outputs.rule-name }}
+            Rule ID: ${{ steps.nsg_rule.outputs.rule-id }}
+            NSG: ${{ steps.nsg_rule.outputs.nsg-name }}
+            Resource Group: ${{ steps.nsg_rule.outputs.resource-group }}
+            Status: ${{ steps.nsg_rule.outputs.status }}
+            Timestamp: ${{ steps.nsg_rule.outputs.timestamp }}
+
+          NOTE: The rule will be automatically deleted when this job completes
+                (via post-action cleanup).
+          EOF_OUT
+
+      - name: Verify Rule Creation
+        shell: bash
+        env:
+          AZURE_RESOURCE_GROUP: ${{ inputs.azure_resource_group }}
+          AZURE_NSG_NAME: ${{ inputs.azure_nsg_name }}
+          RULE_NAME: ${{ steps.nsg_rule.outputs.rule-name }}
+        run: |
+          echo "Verifying rule exists in NSG..."
+          az network nsg rule show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --nsg-name "$AZURE_NSG_NAME" \
+            --name "$RULE_NAME" \
+            --query '{name:name,direction:direction,protocol:protocol,sourceAddressPrefixes:sourceAddressPrefixes,destinationPortRanges:destinationPortRanges,access:access}' \
+            -o json
+
+      # Cleanup is automatic via action post-step

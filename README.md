@@ -34,6 +34,21 @@ azure-lz-actions/
 Each action can be used independently in your GitHub workflows. See the
 individual action's README for detailed usage instructions and examples.
 
+### Action Runtime Dependencies
+
+Node.js actions in this repository are distributed with bundled runtime artifacts.
+Workflows can call actions directly without running `npm ci` during job execution.
+
+```yaml
+- name: Use action
+  uses: bcgov/azure-lz-actions/actions/<action-name>@main
+  with:
+    # ... inputs
+```
+
+When changing action source code, regenerate and commit bundled outputs before
+opening a pull request.
+
 ### General Pattern
 
 ```yaml

@@ -23,6 +23,10 @@ dist/
 build/
 *.tgz
 
+# Keep bundled action runtime checked in for GitHub Actions execution
+!actions/nsg-jit-rule/dist/
+!actions/nsg-jit-rule/dist/index.js
+
 # OS files
 .DS_Store
 Thumbs.db
