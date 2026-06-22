@@ -1,0 +1,44 @@
+# Markdown linting configuration for BC Government Actions repository
+# Reference: https://github.com/DavidAnson/markdownlint
+
+# Default rule configuration
+default: true
+
+# Line length rule - relaxed for documentation with long URLs
+MD013:
+  line_length: 120
+  code_blocks: false
+  code_lines: false
+  headers: false
+  headers_length: 120
+  stern: false
+
+# Allow MD003 (unordered list prefix) with consistent markers
+MD003:
+  style: consistent
+
+# MD004 - Unordered list indentation (consistent)
+MD004:
+  style: consistent
+
+# MD007 - Unordered list indentation (4 spaces)
+MD007:
+  indent: 2
+
+# MD025 - Multiple top-level headings allowed
+MD025: false
+
+# MD033 - Allow inline HTML (needed for GitHub-specific features)
+MD033: false
+
+# MD034 - Bare URLs allowed (common in documentation)
+MD034: false
+
+# MD040 - Fenced code blocks should have a language
+MD040: false
+
+# MD041 - First line in file should be top level heading (not required for some files)
+MD041: false
+
+# Additional rules
+MD024: false  # Multiple headings with same content allowed

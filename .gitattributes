@@ -1,0 +1,31 @@
+# GitHub Actions workflows and shell scripts require LF line endings
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+Makefile text eol=lf
+
+# JavaScript/Node.js files
+*.js text eol=lf
+*.json text eol=lf
+package.json text eol=lf
+package-lock.json text eol=lf
+
+# Markdown files
+*.md text eol=lf
+
+# Documentation files
+*.txt text eol=lf
+*.md text eol=lf
+LICENSE text eol=lf
+CONTRIBUTING.md text eol=lf
+CODE_OF_CONDUCT.md text eol=lf
+
+# Prevent Git from normalizing line endings when checking out/committing
+# (important for shell scripts and workflows)
+* text=auto
+
+# Git config files
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.gitconfig text eol=lf

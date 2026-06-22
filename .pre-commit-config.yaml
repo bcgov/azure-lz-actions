@@ -1,0 +1,85 @@
+# Pre-commit hooks configuration for BC Government Actions
+# Installation: pip install pre-commit
+# Setup: pre-commit install
+# Run manually: pre-commit run --all-files
+# Run on single file: pre-commit run --files <file>
+# Reference: https://pre-commit.com/
+
+repos:
+  # General fixes
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-template='{original}']
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-yaml
+        args: ['--unsafe']
+      - id: check-json
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-symlinks
+      - id: destroyed-symlinks
+
+  # YAML linting
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [--config-file, .yamllint.yml]
+
+  # Markdown linting
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.13.0
+    hooks:
+      - id: markdownlint-cli2
+        args: [--config, .markdownlint.yml]
+
+  # Shell script linting (shellcheck)
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.9.0.7
+    hooks:
+      - id: shellcheck
+        args: [--severity=warning]
+
+  # Node.js and JavaScript
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.0.0
+    hooks:
+      - id: eslint
+        types: [javascript]
+        additional_dependencies:
+          - eslint
+          - eslint-config-prettier
+          - prettier
+
+  # EditorConfig checker
+  - repo: https://github.com/editorconfig-checker/editorconfig-checker.python
+    rev: 3.0.3
+    hooks:
+      - id: editorconfig-checker
+
+  # License header checker (Apache 2.0 for BC Gov)
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-ast
+
+# Configure behavior
+default_language_version:
+  python: python3.11
+
+# Exclude certain files/directories
+exclude: |
+  (?x)^(
+    node_modules/|
+    \.git/|
+    dist/|
+    build/
+  )$
+
+# Minimum pre-commit version required
+minimum_pre_commit_version: '2.15.0'
