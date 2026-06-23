@@ -19895,6 +19895,13 @@ async function cleanup() {
     core.endGroup();
     core.startGroup("\u{1F4CB} Cleanup Summary");
     const duration = Math.round((Date.now() - startTime) / 1e3);
+    core.info("Cleanup Summary:");
+    core.info(`  Operation ID: ${operationId}`);
+    core.info(`  Rule Name: ${ruleName}`);
+    core.info(`  NSG: ${nsgName}`);
+    core.info(`  Resource Group: ${resourceGroup}`);
+    core.info(`  Duration: ${duration}s`);
+    core.info("  Status: Removed");
     await core.summary.addHeading("NSG JIT Rule Cleanup Complete").addTable([
       [{ data: "Property", header: true }, { data: "Value", header: true }],
       ["Operation ID", operationId],

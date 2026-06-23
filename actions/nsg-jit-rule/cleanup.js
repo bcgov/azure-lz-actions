@@ -172,6 +172,15 @@ async function cleanup() {
     core.startGroup('📋 Cleanup Summary');
 
     const duration = Math.round((Date.now() - startTime) / 1000);
+
+    core.info('Cleanup Summary:');
+    core.info(`  Operation ID: ${operationId}`);
+    core.info(`  Rule Name: ${ruleName}`);
+    core.info(`  NSG: ${nsgName}`);
+    core.info(`  Resource Group: ${resourceGroup}`);
+    core.info(`  Duration: ${duration}s`);
+    core.info('  Status: Removed');
+
     await core.summary
       .addHeading('NSG JIT Rule Cleanup Complete')
       .addTable([

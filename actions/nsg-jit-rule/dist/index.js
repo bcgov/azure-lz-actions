@@ -49591,6 +49591,23 @@ function generateAuditLog(inputs, sourceIP, rule) {
     status: "success"
   };
 }
+function logAuditSummary(audit, execution) {
+  const sourcePrefixes = (audit.azure.rule.source_prefixes || []).join(", ");
+  const destinationPrefixes = (audit.azure.rule.destination_prefixes || []).join(", ");
+  logWithContext("info", "Audit summary", execution);
+  core.info(`  Operation ID: ${audit.operation_id}`);
+  core.info(`  Timestamp: ${audit.timestamp}`);
+  core.info(`  Subscription: ${audit.azure.subscription_id}`);
+  core.info(`  Resource Group: ${audit.azure.resource_group}`);
+  core.info(`  NSG: ${audit.azure.nsg_name}`);
+  core.info(`  Rule Name: ${audit.azure.rule.name}`);
+  core.info(`  Direction/Protocol: ${audit.azure.rule.direction}/${audit.azure.rule.protocol}`);
+  core.info(`  Source Prefixes: ${sourcePrefixes}`);
+  core.info(`  Destination Prefixes: ${destinationPrefixes}`);
+  core.info(`  Destination Ports: ${audit.azure.rule.destination_ports}`);
+  core.info(`  Status: ${audit.status}`);
+  core.debug(`Audit JSON: ${JSON.stringify(audit)}`);
+}
 async function run() {
   const startTime = Date.now();
   const operationId = crypto2.randomUUID();
@@ -49666,7 +49683,7 @@ async function run() {
     core.startGroup("\u{1F4CA} Setting Outputs");
     failurePhase = "outputs";
     const audit = generateAuditLog(inputs, sourceIP, rule);
-    logWithContext("info", `Audit log: ${JSON.stringify(audit)}`, execution);
+    logAuditSummary(audit, execution);
     core.setOutput("rule-id", rule.id);
     core.setOutput("rule-name", inputs.ruleName);
     core.setOutput("nsg-name", inputs.nsgName);
