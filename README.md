@@ -57,6 +57,19 @@ opening a pull request.
     # Action-specific inputs
 ```
 
+For [actions/nsg-jit-rule](./actions/nsg-jit-rule), include a workflow step to
+resolve the runner private IP before invoking the action.
+
+### Breaking Changes (Major Version)
+
+The [actions/nsg-jit-rule](./actions/nsg-jit-rule) action contract uses:
+
+- `source-ip` as a required input
+- `source-prefixes` for one or more source prefixes (defaults to `source-ip/32`)
+- `destination-prefixes` for one or more destination prefixes (defaults to `*`)
+
+See the action README for full examples and input details.
+
 ## Automation
 
 This repository includes automation to keep bundled actions reliable and releasable:

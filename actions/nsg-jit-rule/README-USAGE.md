@@ -2,7 +2,7 @@
 
 ## Quick Start
 
-Use the action directly after Azure login.
+Resolve runner private IP, then use the action.
 
 ```yaml
 name: Create NSG JIT Rule
@@ -24,6 +24,22 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Resolve runner private IP
+        id: runner_ip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUNNER_PRIVATE_IP="$(ip -4 route get 1.1.1.1 | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+          if [[ ! "$RUNNER_PRIVATE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            echo "Failed to resolve private IPv4 from routing table."
+            exit 1
+          fi
+
+          echo "runner_ip=$RUNNER_PRIVATE_IP" >> "$GITHUB_OUTPUT"
+          echo "runner_private_ip=$RUNNER_PRIVATE_IP" >> "$GITHUB_OUTPUT"
+          echo "Resolved runner private IP (VNet/internal): $RUNNER_PRIVATE_IP"
+
       - name: Create NSG JIT Rule
         uses: bcgov/azure-lz-actions/actions/nsg-jit-rule@main
         with:
@@ -31,10 +47,11 @@ jobs:
           resource-group: my-rg
           nsg-name: my-nsg
           rule-name: jit-rdp-access
+          source-ip: ${{ steps.runner_ip.outputs.runner_private_ip }}
           destination-ports: 3389
           protocol: Tcp
           direction: Inbound
-          destination-prefix: '*'
+          destination-prefixes: '*'
 ```
 
 No dependency installation step is required in workflows.
@@ -52,10 +69,12 @@ Disable automatic post-action cleanup when you intentionally want to retain the 
     resource-group: my-rg
     nsg-name: my-nsg
     rule-name: jit-rdp-access
+    source-ip: ${{ steps.runner_ip.outputs.runner_private_ip }}
+    source-prefixes: 10.10.1.5/32,10.10.2.0/24
     destination-ports: 3389
     protocol: Tcp
     direction: Inbound
-    destination-prefix: '*'
+    destination-prefixes: 10.20.1.0/24,10.20.2.10/32
     cleanup-enabled: 'false'
 ```
 

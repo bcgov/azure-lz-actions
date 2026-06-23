@@ -15,6 +15,13 @@ inputs:
   rule-name:
     description: 'Name for the JIT access rule'
     required: true
+  source-ip:
+    description: 'Source IPv4 address to allow (for example, resolved runner private IP)'
+    required: true
+  source-prefixes:
+    description: 'Optional comma-separated source address prefixes (IP/CIDR/*). Defaults to source-ip/32 when omitted.'
+    required: false
+    default: ''
   destination-ports:
     description: 'Destination ports (comma-separated or range, e.g., "80,443" or "3389")'
     required: true
@@ -26,12 +33,8 @@ inputs:
     description: 'Rule direction (Inbound or Outbound)'
     required: true
     default: 'Inbound'
-  destination-prefix:
-    description: 'Destination address prefix (e.g., "*" or specific IP/subnet)'
-    required: true
-    default: '*'
-  source-address-prefix:
-    description: 'Source address prefix for the rule'
+  destination-prefixes:
+    description: 'Optional comma-separated destination address prefixes (IP/CIDR/*). Defaults to * when omitted.'
     required: false
     default: '*'
   priority:
@@ -54,9 +57,13 @@ outputs:
   subscription-id:
     description: 'Subscription ID (for audit/cleanup operations)'
   source-ip:
-    description: 'GitHub runner private IP address'
+    description: 'Source IPv4 address provided to the action'
   source-cidr:
-    description: 'Source CIDR used for rule (IP/32)'
+    description: 'Canonical source CIDR derived from source-ip (IP/32)'
+  source-prefixes:
+    description: 'Effective source address prefixes used by the rule (CSV)'
+  destination-prefixes:
+    description: 'Effective destination address prefixes used by the rule (CSV)'
   pre-state:
     description: 'Previous NSG state before rule creation (JSON)'
   post-state:

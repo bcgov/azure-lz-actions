@@ -63,7 +63,9 @@ async function writeSuccessSummary(inputs, sourceIP, duration, execution) {
       ['Rule Name', inputs.ruleName],
       ['NSG', inputs.nsgName],
       ['Resource Group', inputs.resourceGroup],
-      ['Source IP', `${sourceIP}/32`],
+      ['Source IP', sourceIP],
+      ['Source Prefixes', inputs.sourcePrefixes.join(', ')],
+      ['Destination Prefixes', inputs.destinationPrefixes.join(', ')],
       ['Destination Ports', inputs.destinationPorts],
       ['Protocol', inputs.protocol],
       ['Priority', inputs.priority],
@@ -140,6 +142,11 @@ function validateInputs(inputs) {
     errors.push('Invalid rule name (alphanumeric, dots, underscores, hyphens only, 1-80 chars)');
   }
 
+  // Validate source IP (IPv4)
+  if (!/^([0-9]{1,3}\.){3}[0-9]{1,3}$/.test(inputs.sourceIp)) {
+    errors.push(`Invalid source IP format: ${inputs.sourceIp}. Must be IPv4 address (e.g., 10.0.0.15)`);
+  }
+
   // Validate protocol
   if (!VALID_PROTOCOLS.includes(inputs.protocol.toUpperCase())) {
     errors.push(`Invalid protocol: ${inputs.protocol}. Must be one of: ${VALID_PROTOCOLS.join(', ')}`);
@@ -163,50 +170,40 @@ function validateInputs(inputs) {
     errors.push('Invalid destination ports format. Use single port, range (80-443), or comma-separated list');
   }
 
-  // Validate CIDR formats
-  const validateCIDR = (cidr) => {
-    if (cidr === '*') return true;
-    return /^([0-9]{1,3}\.){3}[0-9]{1,3}(\/([0-9]|[1-2][0-9]|3[0-2]))?$/.test(cidr);
-  };
+  const sourcePrefixes = normalizePrefixes(inputs.sourcePrefixesRaw, [`${inputs.sourceIp}/32`]);
+  const destinationPrefixes = normalizePrefixes(inputs.destinationPrefixesRaw, ['*']);
 
-  if (!validateCIDR(inputs.sourceAddressPrefix)) {
-    errors.push(`Invalid source address prefix CIDR: ${inputs.sourceAddressPrefix}`);
+  for (const prefix of sourcePrefixes) {
+    if (!isValidAddressPrefix(prefix)) {
+      errors.push(`Invalid source prefix: ${prefix}`);
+    }
   }
 
-  if (!validateCIDR(inputs.destinationPrefix)) {
-    errors.push(`Invalid destination prefix CIDR: ${inputs.destinationPrefix}`);
+  for (const prefix of destinationPrefixes) {
+    if (!isValidAddressPrefix(prefix)) {
+      errors.push(`Invalid destination prefix: ${prefix}`);
+    }
   }
 
   return errors;
 }
 
-/**
- * Resolve runner's private IP address
- */
-function getRunnerPrivateIP() {
-  try {
-    core.debug('Attempting to resolve runner private IP from routing table...');
-    // Use routing table to find primary private IP
-    const ip = execSync(
-      "ip -4 route get 1.1.1.1 | awk '{for (i=1;i<=NF;i++) if ($i==\"src\") {print $(i+1); exit}}'",
-      { encoding: 'utf8' }
-    ).trim();
+function isValidAddressPrefix(prefix) {
+  if (prefix === '*') return true;
+  return /^([0-9]{1,3}\.){3}[0-9]{1,3}(\/([0-9]|[1-2][0-9]|3[0-2]))?$/.test(prefix);
+}
 
-    if (/^([0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip)) {
-      core.info(`Resolved runner private IP: ${ip}`);
-      return ip;
-    }
-  } catch (error) {
-    core.warning(`Failed to resolve runner IP from routing table: ${error.message}`);
+function normalizePrefixes(raw, defaults) {
+  const parsed = String(raw || '')
+    .split(',')
+    .map(p => p.trim())
+    .filter(Boolean);
+
+  if (parsed.length > 0) {
+    return parsed;
   }
 
-  // Fallback to environment variable if set
-  if (process.env.RUNNER_PRIVATE_IP) {
-    core.debug(`Using RUNNER_PRIVATE_IP from environment: ${process.env.RUNNER_PRIVATE_IP}`);
-    return process.env.RUNNER_PRIVATE_IP;
-  }
-
-  throw new Error('Failed to resolve runner private IP. Set RUNNER_PRIVATE_IP environment variable.');
+  return defaults;
 }
 
 /**
@@ -296,10 +293,13 @@ async function checkExistingRules(resourceGroup, nsgName, ruleBaseName) {
 async function createOrUpdateRule(inputs, sourceIP) {
   try {
     core.info(`Creating NSG rule: ${inputs.ruleName}`);
-    core.debug(`Rule configuration: direction=${inputs.direction}, protocol=${inputs.protocol}, ports=${inputs.destinationPorts}, source=${sourceIP}/32`);
+    core.debug(
+      `Rule configuration: direction=${inputs.direction}, protocol=${inputs.protocol}, ports=${inputs.destinationPorts}, sourcePrefixes=${inputs.sourcePrefixes.join(',')}, destinationPrefixes=${inputs.destinationPrefixes.join(',')}`
+    );
 
     const ruleName = inputs.ruleName;
-    const sourceCIDR = `${sourceIP}/32`;
+    const sourceAddressPrefixesArg = inputs.sourcePrefixes.map(prefix => `"${prefix}"`).join(' ');
+    const destinationAddressPrefixesArg = inputs.destinationPrefixes.map(prefix => `"${prefix}"`).join(' ');
 
     const output = execSync(
       `az network nsg rule create ` +
@@ -310,8 +310,8 @@ async function createOrUpdateRule(inputs, sourceIP) {
       `--direction ${inputs.direction} ` +
       `--access Allow ` +
       `--protocol ${inputs.protocol.toUpperCase()} ` +
-      `--source-address-prefixes "${sourceCIDR}" ` +
-      `--destination-address-prefixes "${inputs.destinationPrefix}" ` +
+      `--source-address-prefixes ${sourceAddressPrefixesArg} ` +
+      `--destination-address-prefixes ${destinationAddressPrefixesArg} ` +
       `--destination-port-ranges ${inputs.destinationPorts} ` +
       `--query '{id:id, name:name, priority:priority, direction:direction, sourceAddressPrefix:sourceAddressPrefix}' -o json`,
       { encoding: 'utf8' }
@@ -368,8 +368,9 @@ function generateAuditLog(inputs, sourceIP, rule) {
         protocol: inputs.protocol,
         source_ip: sourceIP,
         source_cidr: `${sourceIP}/32`,
+        source_prefixes: inputs.sourcePrefixes,
         destination_ports: inputs.destinationPorts,
-        destination_prefix: inputs.destinationPrefix,
+        destination_prefixes: inputs.destinationPrefixes,
       }
     },
     status: 'success'
@@ -397,11 +398,12 @@ async function run() {
       resourceGroup: core.getInput('resource-group', { required: true }),
       nsgName: core.getInput('nsg-name', { required: true }),
       ruleName: core.getInput('rule-name', { required: true }),
+      sourceIp: core.getInput('source-ip', { required: true }),
+      sourcePrefixesRaw: core.getInput('source-prefixes') || '',
       destinationPorts: core.getInput('destination-ports', { required: true }),
       protocol: core.getInput('protocol', { required: true }),
       direction: core.getInput('direction', { required: true }),
-      destinationPrefix: core.getInput('destination-prefix', { required: true }),
-      sourceAddressPrefix: core.getInput('source-address-prefix') || '*',
+      destinationPrefixesRaw: core.getInput('destination-prefixes') || '',
       priority: core.getInput('priority') || '3000',
       cleanupEnabled: toBoolean(core.getInput('cleanup-enabled')),
       operationId,
@@ -441,12 +443,15 @@ async function run() {
 
     core.endGroup();
 
-    core.startGroup('🏃 Runner IP Resolution');
-    failurePhase = 'runner-ip-resolution';
+    core.startGroup('🏃 Source IP Configuration');
+    failurePhase = 'source-ip-configuration';
 
-    // Get runner IP
-    const sourceIP = getRunnerPrivateIP();
-    core.info(`Runner will be source IP: ${sourceIP}/32`);
+    const sourceIP = inputs.sourceIp;
+    inputs.sourcePrefixes = normalizePrefixes(inputs.sourcePrefixesRaw, [`${sourceIP}/32`]);
+    inputs.destinationPrefixes = normalizePrefixes(inputs.destinationPrefixesRaw, ['*']);
+    core.info(`Using provided source IP: ${sourceIP}`);
+    core.info(`Effective source prefixes: ${inputs.sourcePrefixes.join(', ')}`);
+    core.info(`Effective destination prefixes: ${inputs.destinationPrefixes.join(', ')}`);
 
     core.endGroup();
 
@@ -482,6 +487,8 @@ async function run() {
     core.setOutput('subscription-id', inputs.subscriptionId);
     core.setOutput('source-ip', sourceIP);
     core.setOutput('source-cidr', `${sourceIP}/32`);
+    core.setOutput('source-prefixes', inputs.sourcePrefixes.join(','));
+    core.setOutput('destination-prefixes', inputs.destinationPrefixes.join(','));
     core.setOutput('pre-state', JSON.stringify(nsgState));
     core.setOutput('post-state', JSON.stringify(verifiedRule));
     core.setOutput('status', 'created');

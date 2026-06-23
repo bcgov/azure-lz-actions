@@ -28,8 +28,12 @@ on:
         description: Direction (Inbound, Outbound)
         required: false
         default: Inbound
-      destination_prefix:
-        description: Destination address prefix
+      source_prefixes:
+        description: Optional source prefixes CSV (defaults to runner private IP/32)
+        required: false
+        default: ''
+      destination_prefixes:
+        description: Optional destination prefixes CSV
         required: false
         default: '*'
 
@@ -50,6 +54,22 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ inputs.azure_subscription_id }}
 
+      - name: Resolve runner private IP
+        id: runner_ip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUNNER_PRIVATE_IP="$(ip -4 route get 1.1.1.1 | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+          if [[ ! "$RUNNER_PRIVATE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            echo "Failed to resolve private IPv4 from routing table."
+            exit 1
+          fi
+
+          echo "runner_ip=$RUNNER_PRIVATE_IP" >> "$GITHUB_OUTPUT"
+          echo "runner_private_ip=$RUNNER_PRIVATE_IP" >> "$GITHUB_OUTPUT"
+          echo "Resolved runner private IP (VNet/internal): $RUNNER_PRIVATE_IP"
+
       - name: Create NSG JIT Rule
         id: nsg_rule
         uses: bcgov/azure-lz-actions/actions/nsg-jit-rule@main
@@ -58,10 +78,12 @@ jobs:
           resource-group: ${{ inputs.azure_resource_group }}
           nsg-name: ${{ inputs.azure_nsg_name }}
           rule-name: ${{ inputs.rule_name }}-${{ github.run_id }}
+          source-ip: ${{ steps.runner_ip.outputs.runner_private_ip }}
+          source-prefixes: ${{ inputs.source_prefixes }}
           destination-ports: ${{ inputs.destination_ports }}
           protocol: ${{ inputs.protocol }}
           direction: ${{ inputs.direction }}
-          destination-prefix: ${{ inputs.destination_prefix }}
+          destination-prefixes: ${{ inputs.destination_prefixes }}
           cleanup-enabled: 'true'
 
       - name: Display Rule Creation Results
@@ -76,6 +98,7 @@ jobs:
             NSG: ${{ steps.nsg_rule.outputs.nsg-name }}
             Resource Group: ${{ steps.nsg_rule.outputs.resource-group }}
             Status: ${{ steps.nsg_rule.outputs.status }}
+            Runner private IP: ${{ steps.runner_ip.outputs.runner_private_ip }}
             Timestamp: ${{ steps.nsg_rule.outputs.timestamp }}
             Operation ID: ${{ steps.nsg_rule.outputs.operation-id }}
             Run ID/Attempt: ${{ steps.nsg_rule.outputs.github-run-id }}/${{ steps.nsg_rule.outputs.github-run-attempt }}
