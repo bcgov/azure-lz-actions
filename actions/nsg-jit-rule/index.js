@@ -54,6 +54,8 @@ function logWithContext(level, message, execution) {
 }
 
 async function writeSuccessSummary(inputs, sourceIP, duration, execution) {
+  const sourceIpDisplay = sourceIP || '(not provided)';
+  const sourceCidrDisplay = sourceIP ? `${sourceIP}/32` : '(not derived)';
   await core.summary
     .addHeading('NSG JIT Rule Created')
     .addTable([
@@ -63,7 +65,8 @@ async function writeSuccessSummary(inputs, sourceIP, duration, execution) {
       ['Rule Name', inputs.ruleName],
       ['NSG', inputs.nsgName],
       ['Resource Group', inputs.resourceGroup],
-      ['Source IP', sourceIP],
+      ['Source IP', sourceIpDisplay],
+      ['Source CIDR', sourceCidrDisplay],
       ['Source Prefixes', inputs.sourcePrefixes.join(', ')],
       ['Destination Prefixes', inputs.destinationPrefixes.join(', ')],
       ['Destination Ports', inputs.destinationPorts],
@@ -142,8 +145,12 @@ function validateInputs(inputs) {
     errors.push('Invalid rule name (alphanumeric, dots, underscores, hyphens only, 1-80 chars)');
   }
 
+  if (!inputs.sourceIp && !inputs.sourcePrefixesRaw) {
+    errors.push('Either source-ip or source-prefixes must be provided');
+  }
+
   // Validate source IP (IPv4)
-  if (!/^([0-9]{1,3}\.){3}[0-9]{1,3}$/.test(inputs.sourceIp)) {
+  if (inputs.sourceIp && !/^([0-9]{1,3}\.){3}[0-9]{1,3}$/.test(inputs.sourceIp)) {
     errors.push(`Invalid source IP format: ${inputs.sourceIp}. Must be IPv4 address (e.g., 10.0.0.15)`);
   }
 
@@ -170,7 +177,8 @@ function validateInputs(inputs) {
     errors.push('Invalid destination ports format. Use single port, range (80-443), or comma-separated list');
   }
 
-  const sourcePrefixes = normalizePrefixes(inputs.sourcePrefixesRaw, [`${inputs.sourceIp}/32`]);
+  const sourcePrefixDefaults = inputs.sourceIp ? [`${inputs.sourceIp}/32`] : [];
+  const sourcePrefixes = normalizePrefixes(inputs.sourcePrefixesRaw, sourcePrefixDefaults);
   const destinationPrefixes = normalizePrefixes(inputs.destinationPrefixesRaw, ['*']);
 
   for (const prefix of sourcePrefixes) {
@@ -345,6 +353,7 @@ async function verifyRuleCreation(resourceGroup, nsgName, ruleName) {
  * Generate audit log entry
  */
 function generateAuditLog(inputs, sourceIP, rule) {
+  const sourceCidr = sourceIP ? `${sourceIP}/32` : '';
   return {
     timestamp: new Date().toISOString(),
     action: 'nsg-jit-rule-created',
@@ -367,7 +376,7 @@ function generateAuditLog(inputs, sourceIP, rule) {
         direction: rule.direction,
         protocol: inputs.protocol,
         source_ip: sourceIP,
-        source_cidr: `${sourceIP}/32`,
+        source_cidr: sourceCidr,
         source_prefixes: inputs.sourcePrefixes,
         destination_ports: inputs.destinationPorts,
         destination_prefixes: inputs.destinationPrefixes,
@@ -398,7 +407,7 @@ async function run() {
       resourceGroup: core.getInput('resource-group', { required: true }),
       nsgName: core.getInput('nsg-name', { required: true }),
       ruleName: core.getInput('rule-name', { required: true }),
-      sourceIp: core.getInput('source-ip', { required: true }),
+      sourceIp: core.getInput('source-ip') || '',
       sourcePrefixesRaw: core.getInput('source-prefixes') || '',
       destinationPorts: core.getInput('destination-ports', { required: true }),
       protocol: core.getInput('protocol', { required: true }),
@@ -447,9 +456,14 @@ async function run() {
     failurePhase = 'source-ip-configuration';
 
     const sourceIP = inputs.sourceIp;
-    inputs.sourcePrefixes = normalizePrefixes(inputs.sourcePrefixesRaw, [`${sourceIP}/32`]);
+    const sourcePrefixDefaults = sourceIP ? [`${sourceIP}/32`] : [];
+    inputs.sourcePrefixes = normalizePrefixes(inputs.sourcePrefixesRaw, sourcePrefixDefaults);
     inputs.destinationPrefixes = normalizePrefixes(inputs.destinationPrefixesRaw, ['*']);
-    core.info(`Using provided source IP: ${sourceIP}`);
+    if (sourceIP) {
+      core.info(`Using provided source IP: ${sourceIP}`);
+    } else {
+      core.info('No source-ip provided; using explicit source-prefixes only');
+    }
     core.info(`Effective source prefixes: ${inputs.sourcePrefixes.join(', ')}`);
     core.info(`Effective destination prefixes: ${inputs.destinationPrefixes.join(', ')}`);
 
@@ -486,7 +500,7 @@ async function run() {
     core.setOutput('resource-group', inputs.resourceGroup);
     core.setOutput('subscription-id', inputs.subscriptionId);
     core.setOutput('source-ip', sourceIP);
-    core.setOutput('source-cidr', `${sourceIP}/32`);
+    core.setOutput('source-cidr', sourceIP ? `${sourceIP}/32` : '');
     core.setOutput('source-prefixes', inputs.sourcePrefixes.join(','));
     core.setOutput('destination-prefixes', inputs.destinationPrefixes.join(','));
     core.setOutput('pre-state', JSON.stringify(nsgState));

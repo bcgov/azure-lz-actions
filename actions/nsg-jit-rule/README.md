@@ -109,7 +109,6 @@ source-ip: ${{ steps.runner_ip.outputs.runner_private_ip }}
 | `resource-group` | Azure resource group name | `my-resource-group` |
 | `nsg-name` | Network Security Group name | `my-nsg` |
 | `rule-name` | Name for the JIT access rule | `jit-rdp-access` |
-| `source-ip` | Source IPv4 address to allow | `10.0.1.25` |
 | `destination-ports` | Destination ports (single, CSV, or range) | `3389`, `80,443`, `1024-65535` |
 | `protocol` | Protocol (`Tcp`, `Udp`, or `*`) | `Tcp` |
 | `direction` | Rule direction (`Inbound` or `Outbound`) | `Inbound` |
@@ -118,6 +117,7 @@ source-ip: ${{ steps.runner_ip.outputs.runner_private_ip }}
 
 | Input | Description | Default |
 | --- | --- | --- |
+| `source-ip` | Source IPv4 address to allow. Required when `source-prefixes` is not set. | Empty |
 | `source-prefixes` | Source address prefixes as CSV (IP/CIDR/*) | `source-ip/32` |
 | `destination-prefixes` | Destination address prefixes as CSV (IP/CIDR/*) | `*` |
 | `priority` | Rule priority (`100-4096`, auto-assigned if omitted) | Auto |

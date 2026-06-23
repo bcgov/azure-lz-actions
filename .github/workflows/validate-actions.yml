@@ -8,8 +8,7 @@ on:
       - '.pre-commit-config.yaml'
       - '.yamllint.yml'
       - '.markdownlint.yml'
-    paths-ignore:
-      - '**/*.md'
+      - '!**/*.md'
   push:
     branches:
       - main
@@ -19,8 +18,7 @@ on:
       - '.pre-commit-config.yaml'
       - '.yamllint.yml'
       - '.markdownlint.yml'
-    paths-ignore:
-      - '**/*.md'
+      - '!**/*.md'
 
 permissions:
   contents: read

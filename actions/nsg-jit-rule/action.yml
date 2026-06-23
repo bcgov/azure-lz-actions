@@ -17,7 +17,8 @@ inputs:
     required: true
   source-ip:
     description: 'Source IPv4 address to allow (for example, resolved runner private IP)'
-    required: true
+    required: false
+    default: ''
   source-prefixes:
     description: 'Optional comma-separated source address prefixes (IP/CIDR/*). Defaults to source-ip/32 when omitted.'
     required: false
