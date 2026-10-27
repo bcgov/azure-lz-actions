@@ -68,7 +68,7 @@ already have private network connectivity to the target resources.
 
 The [actions/nsg-jit-rule](./actions/nsg-jit-rule) action:
 
-- accepts `source-ip` or `source-prefixes`; defaults to `source-ip/32` when only `source-ip` is supplied
+- uses the caller-resolved runner private IPv4 address as `source-ip`, with a `/32` source prefix
 - rejects `*` and `0.0.0.0/0` source prefixes unless `allow-any-source: 'true'` is explicitly set
 - appends a per-operation suffix to the requested `rule-name`; the actual name is available from the `rule-name` output
 - supports multiple NSGs through a workflow matrix with one target per job; each

@@ -3,34 +3,6 @@ name: NSG JIT Rule Example
 on:
   workflow_dispatch:
     inputs:
-      rule_name:
-        description: Name for the temporary rule
-        required: false
-        default: gha-temp-allow
-      destination_ports:
-        description: Destination ports
-        required: false
-        default: '3389'
-      protocol:
-        description: Protocol (Tcp, Udp, *)
-        required: false
-        default: Tcp
-      direction:
-        description: Direction (Inbound, Outbound)
-        required: false
-        default: Inbound
-      source_prefixes:
-        description: Optional source prefixes CSV (defaults to the resolved runner private IP/32)
-        required: false
-        default: ''
-      allow_any_source:
-        description: Allow '*' or 0.0.0.0/0 as a source prefix (not recommended)
-        required: false
-        default: 'false'
-      destination_prefixes:
-        description: Optional destination prefixes CSV
-        required: false
-        default: '*'
       targets:
         description: >-
           JSON array of targets. Each requires name, runner, subscriptionId,
@@ -96,14 +68,12 @@ jobs:
           subscription-id: ${{ matrix.target.subscriptionId }}
           resource-group: ${{ matrix.target.resourceGroup }}
           nsg-name: ${{ matrix.target.nsgName }}
-          rule-name: ${{ matrix.target.ruleName || inputs.rule_name }}
+          rule-name: ${{ matrix.target.ruleName || 'gha-temp-allow' }}
           source-ip: ${{ steps.runner_ip.outputs.runner_private_ip }}
-          source-prefixes: ${{ matrix.target.sourcePrefixes || inputs.source_prefixes }}
-          allow-any-source: ${{ inputs.allow_any_source }}
-          destination-ports: ${{ matrix.target.destinationPorts || inputs.destination_ports }}
-          protocol: ${{ matrix.target.protocol || inputs.protocol }}
-          direction: ${{ matrix.target.direction || inputs.direction }}
-          destination-prefixes: ${{ matrix.target.destinationPrefixes || inputs.destination_prefixes }}
+          destination-ports: ${{ matrix.target.destinationPorts || '3389' }}
+          protocol: ${{ matrix.target.protocol || 'Tcp' }}
+          direction: ${{ matrix.target.direction || 'Inbound' }}
+          destination-prefixes: ${{ matrix.target.destinationPrefixes || '*' }}
           priority: ${{ matrix.target.priority }}
           cleanup-enabled: 'true'
 
@@ -136,9 +106,9 @@ jobs:
           RULE_NAME: ${{ steps.nsg_rule.outputs.rule-name }}
         run: |
           echo "Verifying rule exists in NSG..."
-          RULE_QUERY='{name:name,direction:direction,protocol:protocol,'\
-            'sourceAddressPrefixes:sourceAddressPrefixes,destinationPortRanges:'\
-            'destinationPortRanges,access:access}'
+          RULE_QUERY='{name:name,direction:direction,protocol:protocol,'
+          RULE_QUERY+='sourceAddressPrefixes:sourceAddressPrefixes,destinationPortRanges:'
+          RULE_QUERY+='destinationPortRanges,access:access}'
           az network nsg rule show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --nsg-name "$AZURE_NSG_NAME" \

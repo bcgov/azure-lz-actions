@@ -10,6 +10,7 @@ by the runner's default route.
 
 ## Prerequisites
 
+- The target resource group and NSG must already exist. This action creates and removes security rules only.
 - Configure the GitHub-hosted runner for Azure VNet connectivity and confirm it
   can route to the target private endpoint or resource.
 - Run `azure/login@v3` before this action using OIDC. Grant the workflow
@@ -18,8 +19,7 @@ by the runner's default route.
 - Grant the federated identity read access to the resource group and NSG, and
   permission to create, read, and delete NSG security rules. Scope access to the
   NSG or resource group where practical.
-- Use a private runner address or scoped source prefixes. Broad sources require
-  the `allow-any-source` opt-in.
+- Resolve the runner's private IPv4 address and pass it as `source-ip`.
 
 The `subscription-id` input identifies the NSG's subscription. It may differ
 from the `azure/login` subscription if the logged-in identity can access both.
@@ -99,12 +99,14 @@ Run one matrix job per target NSG. Each job can select its runner label, target
 subscription, and NSG independently. Set `fail-fast: false`
 so one target's failure does not cancel other jobs before their post-action
 cleanup runs. The [example workflow](../../example_workflows/nsg-jit-rule/example-action-workflow.yaml)
-accepts JSON target records with required `name`, `runner`, `subscriptionId`,
+accepts only a `targets` JSON input with required `name`, `runner`, `subscriptionId`,
 `resourceGroup`, and `nsgName` fields. The runner IP is discovered separately
-inside each matrix job. It also supports
-optional `loginSubscriptionId` and per-target `ruleName`, `sourcePrefixes`,
+inside each matrix job and passed as `source-ip`; the workflow does not accept source overrides. It also supports
+optional `loginSubscriptionId` and per-target `ruleName`,
 `destinationPrefixes`, `destinationPorts`, `protocol`, `direction`, and `priority`
-overrides. Prefix and port overrides are comma-separated strings.
+settings. Destination prefixes and ports are comma-separated strings.
+Omitted settings default to rule name `gha-temp-allow`, destination ports `3389`, protocol `Tcp`,
+direction `Inbound`, destination prefixes `*`, and priority `3000`.
 
 For example, provide this JSON as the workflow's `targets` input:
 
@@ -154,7 +156,8 @@ subscription.
 | `priority` | No | NSG rule priority from 100 through 4096 | `3000` |
 | `cleanup-enabled` | No | Remove this operation's rule after the job | `true` |
 
-If `source-ip` is omitted, provide a `source-prefixes` value. Wildcard sources
+The example workflows always pass the runner's resolved private IP as `source-ip`, giving it a `/32` source prefix.
+For custom integrations, the action also accepts `source-prefixes` without `source-ip`. Wildcard sources
 and `0.0.0.0/0` require `allow-any-source: 'true'` and are not recommended.
 
 ## Outputs
