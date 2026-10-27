@@ -15,9 +15,16 @@
  */
 
 const core = require('@actions/core');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const { isNotFoundError } = require('./validation');
 
-const MAX_CLEANUP_RETRIES = 2;
+const MAX_CLEANUP_RETRIES = 3;
+const MAX_VERIFY_ATTEMPTS = 12;
+
+function runAzureCli(args, subscriptionId) {
+  const scopedArgs = subscriptionId ? [...args, '--subscription', subscriptionId] : args;
+  return execFileSync('az', scopedArgs, { encoding: 'utf8', windowsHide: true });
+}
 
 /**
  * Retry wrapper for cleanup operations
@@ -29,10 +36,14 @@ async function retryCleanup(fn, context = '') {
       return await fn();
     } catch (error) {
       lastError = error;
-      if (attempt < MAX_CLEANUP_RETRIES) {
+      const isTransient = ['RequestTimeout', 'ServiceUnavailable', 'ECONNRESET', 'ETIMEDOUT'].includes(error.code) ||
+        /timeout|temporarily unavailable/i.test(error.message || '');
+      if (isTransient && attempt < MAX_CLEANUP_RETRIES) {
         const backoffMs = 500 * Math.pow(2, attempt - 1);
         core.warning(`${context} attempt ${attempt} failed, retrying in ${backoffMs}ms: ${error.message}`);
         await new Promise(resolve => setTimeout(resolve, backoffMs));
+      } else {
+        throw error;
       }
     }
   }
@@ -42,75 +53,60 @@ async function retryCleanup(fn, context = '') {
 /**
  * Delete NSG rule
  */
-async function deleteRule(resourceGroup, nsgName, ruleName) {
+async function getRule(resourceGroup, nsgName, ruleName, subscriptionId, runAz) {
   try {
-    core.debug(`Attempting to delete rule: ${ruleName}`);
-
-    execSync(
-      `az network nsg rule delete ` +
-      `--resource-group "${resourceGroup}" ` +
-      `--nsg-name "${nsgName}" ` +
-      `--name "${ruleName}" ` +
-      `--no-wait`,
-      { encoding: 'utf8' }
-    );
-
-    core.info(`✓ Initiated deletion of rule: ${ruleName}`);
+    const output = runAz([
+      'network', 'nsg', 'rule', 'show', '--resource-group', resourceGroup,
+      '--nsg-name', nsgName, '--name', ruleName, '-o', 'json'
+    ], subscriptionId);
+    return JSON.parse(output);
   } catch (error) {
-    // If rule doesn't exist (404), that's OK - cleanup succeeded
-    if (error.message?.includes('NotFound') || error.message?.includes('does not exist')) {
-      core.info(`Rule already removed or doesn't exist: ${ruleName}`);
-      return;
-    }
+    if (isNotFoundError(error)) return null;
     throw error;
   }
 }
 
-/**
- * Verify rule deletion
- */
-async function verifyCleanup(resourceGroup, nsgName, ruleName, maxAttempts = 5) {
-  const startTime = Date.now();
-  const timeout = 60000; // 60 second timeout
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      // Try to fetch the rule - if it fails with 404, cleanup is complete
-      execSync(
-        `az network nsg rule show --resource-group "${resourceGroup}" --nsg-name "${nsgName}" --name "${ruleName}" -o json`,
-        { encoding: 'utf8', stdio: 'pipe' }
-      );
-
-      // Rule still exists, wait and retry
-      const elapsed = Date.now() - startTime;
-      if (elapsed > timeout) {
-        throw new Error(`Cleanup verification timeout after ${elapsed}ms`);
-      }
-
-      const waitTime = Math.min(2000 * attempt, 10000);
-      core.debug(`Rule still exists (attempt ${attempt}/${maxAttempts}), waiting ${waitTime}ms...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-
-    } catch (error) {
-      // Rule doesn't exist (404) = success
-      if (error.message?.includes('NotFound') || error.message?.includes('does not exist') || error.status === 404) {
-        core.info(`✓ Rule deletion verified: ${ruleName}`);
-        return true;
-      }
-      // If it's a different error, throw it
-      throw error;
-    }
+async function deleteRule({ resourceGroup, nsgName, ruleName, subscriptionId, expectedDescription, runAz }) {
+  core.debug(`Checking ownership before deleting rule: ${ruleName}`);
+  const rule = await getRule(resourceGroup, nsgName, ruleName, subscriptionId, runAz);
+  if (!rule) {
+    core.info(`Rule is already absent: ${ruleName}`);
+    return false;
   }
 
-  throw new Error(`Failed to verify rule deletion after ${maxAttempts} attempts`);
+  if (rule.description !== expectedDescription) {
+    throw new Error(`Refusing to delete ${ruleName}: operation ownership marker does not match`);
+  }
+
+  runAz([
+    'network', 'nsg', 'rule', 'delete', '--resource-group', resourceGroup,
+    '--nsg-name', nsgName, '--name', ruleName
+  ], subscriptionId);
+  return true;
 }
 
-/**
- * Main cleanup entry point
- */
-async function cleanup() {
+async function verifyCleanup({ resourceGroup, nsgName, ruleName, subscriptionId, expectedDescription, runAz, sleep }) {
+  for (let attempt = 1; attempt <= MAX_VERIFY_ATTEMPTS; attempt++) {
+    const rule = await getRule(resourceGroup, nsgName, ruleName, subscriptionId, runAz);
+    if (!rule) {
+      core.info(`Rule deletion verified: ${ruleName}`);
+      return;
+    }
+    if (rule.description !== expectedDescription) {
+      throw new Error(`Rule ${ruleName} changed ownership during cleanup; refusing further action`);
+    }
+
+    const waitTime = Math.min(1000 * attempt, 5000);
+    core.debug(`Rule still exists (attempt ${attempt}/${MAX_VERIFY_ATTEMPTS}), waiting ${waitTime}ms`);
+    await sleep(waitTime);
+  }
+
+  throw new Error(`Failed to verify deletion of rule ${ruleName} after ${MAX_VERIFY_ATTEMPTS} attempts`);
+}
+
+async function cleanup({ actionCore = core, runAz = runAzureCli, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const startTime = Date.now();
-  const operationId = process.env.NSG_OPERATION_ID || 'unknown';
+  const operationId = actionCore.getState('operation-id') || 'unknown';
   const cleanupLog = {
     start_time: new Date().toISOString(),
     action: 'nsg-jit-rule-cleanup',
@@ -118,18 +114,18 @@ async function cleanup() {
   };
 
   try {
-    core.startGroup('🧹 Cleanup: Reverting NSG Rule');
+    actionCore.startGroup('Cleanup: Removing NSG Rule');
 
-    // Extract cleanup parameters from environment (set by main action via outputs)
-    const ruleName = process.env.NSG_RULE_NAME;
-    const nsgName = process.env.NSG_NAME;
-    const resourceGroup = process.env.RESOURCE_GROUP;
-    const subscriptionId = process.env.SUBSCRIPTION_ID;
-    const cleanupEnabled = (process.env.NSG_CLEANUP_ENABLED || 'true').toLowerCase() === 'true';
+    const ruleName = actionCore.getState('rule-name');
+    const nsgName = actionCore.getState('nsg-name');
+    const resourceGroup = actionCore.getState('resource-group');
+    const subscriptionId = actionCore.getState('subscription-id');
+    const expectedDescription = actionCore.getState('ownership-description');
+    const cleanupEnabled = (actionCore.getState('cleanup-enabled') || 'true').toLowerCase() === 'true';
 
     if (!cleanupEnabled) {
-      core.warning('Cleanup explicitly disabled by input. Rule will be retained.');
-      await core.summary
+      actionCore.warning('Cleanup explicitly disabled by input. Rule will be retained.');
+      await actionCore.summary
         .addHeading('NSG JIT Rule Cleanup Skipped')
         .addTable([
           [{ data: 'Property', header: true }, { data: 'Value', header: true }],
@@ -137,51 +133,38 @@ async function cleanup() {
           ['Reason', 'cleanup-enabled input set to false']
         ])
         .write();
-      core.endGroup();
+      actionCore.endGroup();
       return;
     }
 
-    // If no parameters set, this is likely a manual post-action execution without prior main action
     if (!ruleName || !nsgName || !resourceGroup) {
-      core.warning('Cleanup parameters not set. Cleanup skipped.');
-      core.info('This post-action should only run after nsg-jit-rule main action.');
-      core.endGroup();
+      actionCore.warning('No rule was registered for cleanup; no NSG rule was changed.');
+      actionCore.endGroup();
       return;
     }
+    if (!subscriptionId || !expectedDescription) {
+      throw new Error('Cleanup subscription or ownership marker is missing; refusing to delete any rule');
+    }
 
-    core.info('Cleanup Configuration:');
-    core.info(`  Rule Name: ${ruleName}`);
-    core.info(`  NSG: ${nsgName}`);
-    core.info(`  Resource Group: ${resourceGroup}`);
-    core.info(`  Subscription: ${subscriptionId}`);
+    actionCore.info(`Cleanup target: ${subscriptionId}/${resourceGroup}/${nsgName}/${ruleName}`);
 
-    // Execute deletion with retry logic
     await retryCleanup(
-      () => deleteRule(resourceGroup, nsgName, ruleName),
+      () => deleteRule({ resourceGroup, nsgName, ruleName, subscriptionId, expectedDescription, runAz }),
       'Rule deletion'
     );
 
-    // Verify deletion
     await retryCleanup(
-      () => verifyCleanup(resourceGroup, nsgName, ruleName),
+      () => verifyCleanup({ resourceGroup, nsgName, ruleName, subscriptionId, expectedDescription, runAz, sleep }),
       'Cleanup verification'
     );
 
-    core.endGroup();
-
-    core.startGroup('📋 Cleanup Summary');
+    actionCore.endGroup();
 
     const duration = Math.round((Date.now() - startTime) / 1000);
 
-    core.info('Cleanup Summary:');
-    core.info(`  Operation ID: ${operationId}`);
-    core.info(`  Rule Name: ${ruleName}`);
-    core.info(`  NSG: ${nsgName}`);
-    core.info(`  Resource Group: ${resourceGroup}`);
-    core.info(`  Duration: ${duration}s`);
-    core.info('  Status: Removed');
+    actionCore.info(`Cleanup complete for operation ${operationId}; removed rule ${ruleName} in ${duration}s`);
 
-    await core.summary
+    await actionCore.summary
       .addHeading('NSG JIT Rule Cleanup Complete')
       .addTable([
         [{ data: 'Property', header: true }, { data: 'Value', header: true }],
@@ -198,25 +181,26 @@ async function cleanup() {
     cleanupLog.duration_ms = Date.now() - startTime;
     cleanupLog.rule_removed = ruleName;
 
-    core.endGroup();
+    actionCore.endGroup();
 
   } catch (error) {
-    core.error(`❌ Cleanup failed: ${error.message}`);
+    actionCore.error(`Cleanup failed: ${error.message}`);
     cleanupLog.status = 'error';
     cleanupLog.error = error.message;
     cleanupLog.duration_ms = Date.now() - startTime;
 
-    // Don't fail the job on cleanup error - log it but let workflow complete
-    core.warning('Cleanup encountered an error but workflow will continue. Please verify manual cleanup if needed.');
-    core.warning(`Details: ${error.message}`);
+    actionCore.warning('The workflow will fail because temporary NSG access could not be confirmed as removed. Check the rule and remove it manually if it remains.');
+    actionCore.setFailed(`NSG JIT cleanup failed: ${error.message}`);
   }
 
   cleanupLog.end_time = new Date().toISOString();
-  core.debug(`Cleanup audit log: ${JSON.stringify(cleanupLog)}`);
+  actionCore.debug(`Cleanup audit log: ${JSON.stringify(cleanupLog)}`);
 }
 
-// Execute cleanup
-cleanup().catch(error => {
-  // Extra safety net
-  core.error(`Cleanup action error: ${error.message}`);
-});
+if (require.main === module) {
+  cleanup().catch(error => {
+    core.setFailed(`NSG JIT cleanup failed: ${error.message}`);
+  });
+}
+
+module.exports = { cleanup, deleteRule, getRule, runAzureCli, verifyCleanup };

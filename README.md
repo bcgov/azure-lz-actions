@@ -41,7 +41,7 @@ Workflows can call actions directly without running `npm ci` during job executio
 
 ```yaml
 - name: Use action
-  uses: bcgov/azure-lz-actions/actions/<action-name>@main
+  uses: bcgov/azure-lz-actions/actions/<action-name>@v1.2.0
   with:
     # ... inputs
 ```
@@ -52,21 +52,29 @@ opening a pull request.
 ### General Pattern
 
 ```yaml
-- uses: bcgov/azure-lz-actions/actions/<action-name>@main
+- uses: bcgov/azure-lz-actions/actions/<action-name>@v1.2.0
   with:
     # Action-specific inputs
 ```
 
-For [actions/nsg-jit-rule](./actions/nsg-jit-rule), include a workflow step to
-resolve the runner private IP before invoking the action.
+Replace the example version with a reviewed release tag or full commit SHA. Use
+`@main` only when testing unreleased changes.
 
-### Breaking Changes (Major Version)
+For [actions/nsg-jit-rule](./actions/nsg-jit-rule), the caller resolves and passes
+the runner's private IPv4 address before invoking the action. The runner must
+already have private network connectivity to the target resources.
 
-The [actions/nsg-jit-rule](./actions/nsg-jit-rule) action contract uses:
+### NSG JIT Rule Contract
 
-- `source-ip` as a required input
-- `source-prefixes` for one or more source prefixes (defaults to `source-ip/32`)
-- `destination-prefixes` for one or more destination prefixes (defaults to `*`)
+The [actions/nsg-jit-rule](./actions/nsg-jit-rule) action:
+
+- accepts `source-ip` or `source-prefixes`; defaults to `source-ip/32` when only `source-ip` is supplied
+- rejects `*` and `0.0.0.0/0` source prefixes unless `allow-any-source: 'true'` is explicitly set
+- appends a per-operation suffix to the requested `rule-name`; the actual name is available from the `rule-name` output
+- supports multiple NSGs through a workflow matrix with one target per job; each
+  post-step reads its own saved cleanup state
+- selects `subscription-id` for Azure CLI resource operations, independently of the subscription used by `azure/login`
+- verifies its operation marker before cleanup and fails the job if cleanup cannot confirm that temporary access was removed
 
 See the action README for full examples and input details.
 
@@ -77,6 +85,7 @@ This repository includes automation to keep bundled actions reliable and releasa
 - `.github/workflows/validate-actions.yml`
   - Runs on pull requests and pushes to `main`
   - Validates source syntax
+  - Runs action unit tests
   - Rebuilds bundled artifacts and fails if `dist` changes are not committed
   - Runs `pre-commit` checks across the repository
 

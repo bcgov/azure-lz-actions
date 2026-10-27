@@ -79,7 +79,12 @@ jobs:
             exit 0
           fi
 
-          MATRIX_JSON="$(printf '%s\n' "${ACTIONS[@]}" | python3 -c 'import json,sys; actions=[x.strip() for x in sys.stdin if x.strip()]; print(json.dumps({"action": actions}))')"
+          MATRIX_JSON="$(printf '%s\n' "${ACTIONS[@]}" | python3 -c '
+          import json
+          import sys
+          actions = [item.strip() for item in sys.stdin if item.strip()]
+          print(json.dumps({"action": actions}))
+          ')"
           echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
           echo 'has_actions=true' >> "$GITHUB_OUTPUT"
 
@@ -121,16 +126,21 @@ jobs:
         working-directory: ${{ matrix.action }}
         run: |
           set -euo pipefail
-          if [[ -f package-lock.json ]]; then
-            npm ci
-          else
-            npm install
+          if [[ ! -f package-lock.json ]]; then
+            echo "A committed package-lock.json is required for reproducible builds." >&2
+            exit 1
           fi
+          npm ci
 
       - name: Verify source syntax
         if: hashFiles(format('{0}/package.json', matrix.action)) != ''
         working-directory: ${{ matrix.action }}
         run: npm run verify --if-present
+
+      - name: Run unit tests
+        if: hashFiles(format('{0}/package.json', matrix.action)) != ''
+        working-directory: ${{ matrix.action }}
+        run: npm test --if-present
 
       - name: Build bundled artifacts
         if: hashFiles(format('{0}/package.json', matrix.action)) != ''
@@ -150,7 +160,8 @@ jobs:
           fi
 
           if ! git diff --quiet -- "$DIST_DIR" "$DIST_CLEANUP_DIR"; then
-            echo "Release tag contains stale dist artifacts for ${{ matrix.action }}. Rebuild and retag before releasing."
+            echo "Release tag contains stale dist artifacts for ${{ matrix.action }}." \
+              "Rebuild and retag before releasing."
             git --no-pager diff -- "$DIST_DIR" "$DIST_CLEANUP_DIR" | cat
             exit 1
           fi

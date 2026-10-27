@@ -8,7 +8,7 @@
 repos:
   # General fixes
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
+    rev: v6.0.0
     hooks:
       - id: end-of-file-fixer
       - id: trailing-whitespace
@@ -21,14 +21,14 @@ repos:
 
   # YAML linting
   - repo: https://github.com/adrienverge/yamllint
-    rev: v1.35.1
+    rev: v1.38.0
     hooks:
       - id: yamllint
         args: [--config-file, .yamllint.yml]
 
   # Markdown linting
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.13.0
+    rev: v0.24.0
     hooks:
       - id: markdownlint-cli2
         exclude: '^(CODE_OF_CONDUCT|LICENSE|CONTRIBUTING)\.md$'

@@ -1,17 +1,15 @@
 /**
  * NSG JIT Rule GitHub Action
  *
- * This action creates or updates a Network Security Group (NSG) just-in-time (JIT)
- * access rule in Azure. It manages the lifecycle of temporary access rules for
- * security and compliance purposes.
+ * This action creates a uniquely named Network Security Group (NSG) rule in Azure
+ * and removes it after the workflow job completes.
  *
  * Enterprise Features:
  * - Input validation with detailed error messages
  * - Retry logic with exponential backoff for transient failures
  * - Pre-flight resource verification
  * - Structured audit logging
- * - Safe cleanup integration
- * - Idempotency support
+ * - Ownership-checked cleanup
  *
  * @author BC Government
  * @version 1.0.0
@@ -19,22 +17,24 @@
 
 const core = require('@actions/core');
 const crypto = require('crypto');
-const { execSync } = require('child_process');
-const { DefaultAzureCredential } = require('@azure/identity');
+const { execFileSync } = require('child_process');
+const {
+  buildCreateRuleArgs,
+  isNotFoundError,
+  normalizePrefixes,
+  operationRuleName,
+  ownershipDescription,
+  toBoolean,
+  validateInputs
+} = require('./validation');
 
 // Constants
 const MAX_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 1000;
-const PRIORITY_MIN = 100;
-const PRIORITY_MAX = 4096;
-const VALID_PROTOCOLS = ['TCP', 'UDP', '*'];
-const VALID_DIRECTIONS = ['Inbound', 'Outbound'];
 
-function toBoolean(value, defaultValue = true) {
-  if (value === undefined || value === null || String(value).trim() === '') {
-    return defaultValue;
-  }
-  return String(value).trim().toLowerCase() === 'true';
+function runAzureCli(args, subscriptionId, execFile = execFileSync) {
+  const scopedArgs = subscriptionId ? [...args, '--subscription', subscriptionId] : args;
+  return execFile('az', scopedArgs, { encoding: 'utf8', windowsHide: true });
 }
 
 function buildExecutionContext(operationId) {
@@ -120,138 +120,46 @@ async function retryWithBackoff(fn, context = '') {
 }
 
 /**
- * Validate and sanitize inputs
- */
-function validateInputs(inputs) {
-  const errors = [];
-
-  // Validate subscription ID (UUID format)
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(inputs.subscriptionId)) {
-    errors.push('Invalid subscription ID format (must be UUID)');
-  }
-
-  // Validate resource group name
-  if (!/^[a-zA-Z0-9._()-]{1,90}$/.test(inputs.resourceGroup)) {
-    errors.push('Invalid resource group name (alphanumeric, dots, underscores, hyphens only, 1-90 chars)');
-  }
-
-  // Validate NSG name
-  if (!/^[a-zA-Z0-9._()-]{1,80}$/.test(inputs.nsgName)) {
-    errors.push('Invalid NSG name (alphanumeric, dots, underscores, hyphens only, 1-80 chars)');
-  }
-
-  // Validate rule name
-  if (!/^[a-zA-Z0-9._()-]{1,80}$/.test(inputs.ruleName)) {
-    errors.push('Invalid rule name (alphanumeric, dots, underscores, hyphens only, 1-80 chars)');
-  }
-
-  if (!inputs.sourceIp && !inputs.sourcePrefixesRaw) {
-    errors.push('Either source-ip or source-prefixes must be provided');
-  }
-
-  // Validate source IP (IPv4)
-  if (inputs.sourceIp && !/^([0-9]{1,3}\.){3}[0-9]{1,3}$/.test(inputs.sourceIp)) {
-    errors.push(`Invalid source IP format: ${inputs.sourceIp}. Must be IPv4 address (e.g., 10.0.0.15)`);
-  }
-
-  // Validate protocol
-  if (!VALID_PROTOCOLS.includes(inputs.protocol.toUpperCase())) {
-    errors.push(`Invalid protocol: ${inputs.protocol}. Must be one of: ${VALID_PROTOCOLS.join(', ')}`);
-  }
-
-  // Validate direction
-  if (!VALID_DIRECTIONS.includes(inputs.direction)) {
-    errors.push(`Invalid direction: ${inputs.direction}. Must be 'Inbound' or 'Outbound'`);
-  }
-
-  // Validate priority if provided
-  if (inputs.priority) {
-    const p = parseInt(inputs.priority, 10);
-    if (isNaN(p) || p < PRIORITY_MIN || p > PRIORITY_MAX) {
-      errors.push(`Invalid priority: ${inputs.priority}. Must be number between ${PRIORITY_MIN}-${PRIORITY_MAX}`);
-    }
-  }
-
-  // Validate ports format
-  if (inputs.destinationPorts !== '*' && !/^([0-9]{1,5}(-[0-9]{1,5})?(,[0-9]{1,5}(-[0-9]{1,5})?)*)$/.test(inputs.destinationPorts)) {
-    errors.push('Invalid destination ports format. Use single port, range (80-443), or comma-separated list');
-  }
-
-  const sourcePrefixDefaults = inputs.sourceIp ? [`${inputs.sourceIp}/32`] : [];
-  const sourcePrefixes = normalizePrefixes(inputs.sourcePrefixesRaw, sourcePrefixDefaults);
-  const destinationPrefixes = normalizePrefixes(inputs.destinationPrefixesRaw, ['*']);
-
-  for (const prefix of sourcePrefixes) {
-    if (!isValidAddressPrefix(prefix)) {
-      errors.push(`Invalid source prefix: ${prefix}`);
-    }
-  }
-
-  for (const prefix of destinationPrefixes) {
-    if (!isValidAddressPrefix(prefix)) {
-      errors.push(`Invalid destination prefix: ${prefix}`);
-    }
-  }
-
-  return errors;
-}
-
-function isValidAddressPrefix(prefix) {
-  if (prefix === '*') return true;
-  return /^([0-9]{1,3}\.){3}[0-9]{1,3}(\/([0-9]|[1-2][0-9]|3[0-2]))?$/.test(prefix);
-}
-
-function normalizePrefixes(raw, defaults) {
-  const parsed = String(raw || '')
-    .split(',')
-    .map(p => p.trim())
-    .filter(Boolean);
-
-  if (parsed.length > 0) {
-    return parsed;
-  }
-
-  return defaults;
-}
-
-/**
  * Verify Azure context and permissions
  */
-async function verifyAzureContext(credential, subscriptionId) {
+async function verifyAzureContext(subscriptionId) {
   try {
-    core.debug('Verifying Azure authentication context...');
+    core.debug(`Verifying Azure CLI authentication and target subscription ${subscriptionId}...`);
     await retryWithBackoff(async () => {
-      const token = await credential.getToken('https://management.azure.com/.default');
-      return token;
-    }, 'Azure authentication');
-    core.info('Azure authentication verified');
+      execFileSync('az', ['account', 'set', '--subscription', subscriptionId], { encoding: 'utf8', windowsHide: true });
+      const selectedSubscription = runAzureCli(['account', 'show', '--query', 'id', '-o', 'tsv'], subscriptionId).trim();
+      if (selectedSubscription.toLowerCase() !== subscriptionId.toLowerCase()) {
+        throw new Error(`Azure CLI selected subscription ${selectedSubscription}, expected ${subscriptionId}`);
+      }
+      const token = runAzureCli([
+        'account', 'get-access-token', '--resource', 'https://management.azure.com/',
+        '--query', 'accessToken', '-o', 'tsv'
+      ], subscriptionId).trim();
+      if (!token) throw new Error('Azure CLI returned an empty management token');
+    }, 'Azure CLI authentication');
+    core.info(`Azure authentication and subscription verified: ${subscriptionId}`);
   } catch (error) {
-    throw new Error(`Azure authentication failed: ${error.message}. Ensure OIDC is configured correctly.`);
+    throw new Error(`Azure CLI authentication or target subscription access failed: ${error.message}. Ensure azure/login completed and the identity can access the target subscription.`);
   }
 }
 
 /**
  * Check if resource group exists
  */
-async function verifyResourceGroup(resourceGroup) {
+async function verifyResourceGroup(resourceGroup, subscriptionId) {
   try {
     core.debug(`Verifying resource group exists: ${resourceGroup}`);
     // Validate resource group existence via Azure CLI to avoid SDK private internals.
     await retryWithBackoff(async () => {
-      const existsOutput = execSync(
-        `az group exists --name "${resourceGroup}"`,
-        { encoding: 'utf8' }
-      ).trim().toLowerCase();
+      const existsOutput = runAzureCli(['group', 'exists', '--name', resourceGroup, '-o', 'tsv'], subscriptionId)
+        .trim().toLowerCase();
 
       if (existsOutput !== 'true') {
         throw new Error(`Resource group not found: ${resourceGroup}`);
       }
 
       // Permission check: list NSGs in the RG to ensure access to Network resources.
-      execSync(
-        `az network nsg list --resource-group "${resourceGroup}" --query "[].name" -o json`,
-        { encoding: 'utf8' }
-      );
+      runAzureCli(['network', 'nsg', 'list', '--resource-group', resourceGroup, '--query', '[].name', '-o', 'json'], subscriptionId);
 
       return true;
     }, `Verify resource group ${resourceGroup}`);
@@ -264,69 +172,43 @@ async function verifyResourceGroup(resourceGroup) {
 /**
  * Check if NSG exists and get current rules
  */
-async function getNSGState(resourceGroup, nsgName) {
+async function getNSGState(resourceGroup, nsgName, subscriptionId) {
   try {
     core.debug(`Checking NSG state: ${nsgName}`);
-    const output = execSync(
-      `az network nsg show --resource-group "${resourceGroup}" --name "${nsgName}" --query '{name:name, id:id, location:location, securityRules:securityRules[].name}' -o json`,
-      { encoding: 'utf8' }
-    );
+    const output = runAzureCli([
+      'network', 'nsg', 'show', '--resource-group', resourceGroup, '--name', nsgName,
+      '--query', '{name:name, id:id, location:location, securityRules:securityRules[].name}', '-o', 'json'
+    ], subscriptionId);
     return JSON.parse(output);
   } catch (error) {
     throw new Error(`NSG not found or inaccessible: ${nsgName}. Verify it exists in RG ${resourceGroup}.`);
   }
 }
 
-/**
- * Check for existing rule conflicts or stale rules
- */
-async function checkExistingRules(resourceGroup, nsgName, ruleBaseName) {
+async function getRule(resourceGroup, nsgName, ruleName, subscriptionId) {
   try {
-    core.debug(`Checking for existing rules matching: ${ruleBaseName}`);
-    const output = execSync(
-      `az network nsg rule list --resource-group "${resourceGroup}" --nsg-name "${nsgName}" --query "[?starts_with(name, '${ruleBaseName}')]" -o json`,
-      { encoding: 'utf8' }
-    );
-    const rules = JSON.parse(output);
-    return rules;
+    const output = runAzureCli([
+      'network', 'nsg', 'rule', 'show', '--resource-group', resourceGroup,
+      '--nsg-name', nsgName, '--name', ruleName, '-o', 'json'
+    ], subscriptionId);
+    return JSON.parse(output);
   } catch (error) {
-    core.warning(`Could not check for existing rules: ${error.message}`);
-    return [];
+    if (isNotFoundError(error)) return null;
+    throw error;
   }
 }
 
-/**
- * Create or update NSG rule
- */
-async function createOrUpdateRule(inputs, sourceIP) {
+async function createRule(inputs, subscriptionId) {
   try {
     core.info(`Creating NSG rule: ${inputs.ruleName}`);
     core.debug(
       `Rule configuration: direction=${inputs.direction}, protocol=${inputs.protocol}, ports=${inputs.destinationPorts}, sourcePrefixes=${inputs.sourcePrefixes.join(',')}, destinationPrefixes=${inputs.destinationPrefixes.join(',')}`
     );
 
-    const ruleName = inputs.ruleName;
-    const sourceAddressPrefixesArg = inputs.sourcePrefixes.map(prefix => `"${prefix}"`).join(' ');
-    const destinationAddressPrefixesArg = inputs.destinationPrefixes.map(prefix => `"${prefix}"`).join(' ');
-
-    const output = execSync(
-      `az network nsg rule create ` +
-      `--resource-group "${inputs.resourceGroup}" ` +
-      `--nsg-name "${inputs.nsgName}" ` +
-      `--name "${ruleName}" ` +
-      `--priority ${inputs.priority} ` +
-      `--direction ${inputs.direction} ` +
-      `--access Allow ` +
-      `--protocol ${inputs.protocol.toUpperCase()} ` +
-      `--source-address-prefixes ${sourceAddressPrefixesArg} ` +
-      `--destination-address-prefixes ${destinationAddressPrefixesArg} ` +
-      `--destination-port-ranges ${inputs.destinationPorts} ` +
-      `--query '{id:id, name:name, priority:priority, direction:direction, sourceAddressPrefix:sourceAddressPrefix}' -o json`,
-      { encoding: 'utf8' }
-    );
+    const output = runAzureCli(buildCreateRuleArgs(inputs), subscriptionId);
 
     const rule = JSON.parse(output);
-    core.info(`✓ NSG rule created successfully: ${ruleName}`);
+    core.info(`NSG rule created successfully: ${inputs.ruleName}`);
     return rule;
   } catch (error) {
     throw new Error(`Failed to create NSG rule: ${error.message}`);
@@ -336,13 +218,13 @@ async function createOrUpdateRule(inputs, sourceIP) {
 /**
  * Verify rule was created and is active
  */
-async function verifyRuleCreation(resourceGroup, nsgName, ruleName) {
+async function verifyRuleCreation(resourceGroup, nsgName, ruleName, subscriptionId) {
   try {
     core.debug(`Verifying rule creation: ${ruleName}`);
-    const output = execSync(
-      `az network nsg rule show --resource-group "${resourceGroup}" --nsg-name "${nsgName}" --name "${ruleName}" -o json`,
-      { encoding: 'utf8' }
-    );
+    const output = runAzureCli([
+      'network', 'nsg', 'rule', 'show', '--resource-group', resourceGroup,
+      '--nsg-name', nsgName, '--name', ruleName, '-o', 'json'
+    ], subscriptionId);
     return JSON.parse(output);
   } catch (error) {
     throw new Error(`Rule verification failed: ${ruleName} not found after creation`);
@@ -407,6 +289,16 @@ function logAuditSummary(audit, execution) {
   core.debug(`Audit JSON: ${JSON.stringify(audit)}`);
 }
 
+function saveCleanupState(inputs, execution, actionCore = core) {
+  actionCore.saveState('rule-name', inputs.ruleName);
+  actionCore.saveState('nsg-name', inputs.nsgName);
+  actionCore.saveState('resource-group', inputs.resourceGroup);
+  actionCore.saveState('subscription-id', inputs.subscriptionId);
+  actionCore.saveState('ownership-description', inputs.ownershipDescription);
+  actionCore.saveState('cleanup-enabled', String(inputs.cleanupEnabled));
+  actionCore.saveState('operation-id', execution.operation_id);
+}
+
 /**
  * Main action entry point
  */
@@ -430,6 +322,7 @@ async function run() {
       ruleName: core.getInput('rule-name', { required: true }),
       sourceIp: core.getInput('source-ip') || '',
       sourcePrefixesRaw: core.getInput('source-prefixes') || '',
+      allowAnySource: core.getInput('allow-any-source'),
       destinationPorts: core.getInput('destination-ports', { required: true }),
       protocol: core.getInput('protocol', { required: true }),
       direction: core.getInput('direction', { required: true }),
@@ -451,9 +344,7 @@ async function run() {
     core.startGroup('🔐 Azure Authentication');
     failurePhase = 'azure-authentication';
 
-    // Initialize Azure client and verify context
-    const credential = new DefaultAzureCredential();
-    await verifyAzureContext(credential, inputs.subscriptionId);
+    await verifyAzureContext(inputs.subscriptionId);
 
     core.endGroup();
 
@@ -461,15 +352,9 @@ async function run() {
     failurePhase = 'preflight-validation';
 
     // Verify resource group and NSG exist
-    await verifyResourceGroup(inputs.resourceGroup);
-    const nsgState = await getNSGState(inputs.resourceGroup, inputs.nsgName);
+    await verifyResourceGroup(inputs.resourceGroup, inputs.subscriptionId);
+    const nsgState = await getNSGState(inputs.resourceGroup, inputs.nsgName, inputs.subscriptionId);
     core.info(`NSG verified: ${nsgState.name} (Location: ${nsgState.location})`);
-
-    // Check for existing/stale rules
-    const existingRules = await checkExistingRules(inputs.resourceGroup, inputs.nsgName, inputs.ruleName);
-    if (existingRules.length > 0) {
-      core.warning(`Found ${existingRules.length} existing rule(s) matching pattern: ${existingRules.map(r => r.name).join(', ')}`);
-    }
 
     core.endGroup();
 
@@ -480,6 +365,8 @@ async function run() {
     const sourcePrefixDefaults = sourceIP ? [`${sourceIP}/32`] : [];
     inputs.sourcePrefixes = normalizePrefixes(inputs.sourcePrefixesRaw, sourcePrefixDefaults);
     inputs.destinationPrefixes = normalizePrefixes(inputs.destinationPrefixesRaw, ['*']);
+    inputs.ruleName = operationRuleName(inputs.ruleName, operationId);
+    inputs.ownershipDescription = ownershipDescription(operationId);
     if (sourceIP) {
       core.info(`Using provided source IP: ${sourceIP}`);
     } else {
@@ -493,17 +380,27 @@ async function run() {
     core.startGroup('🚀 Creating NSG Rule');
     failurePhase = 'rule-create';
 
+    const existingRule = await getRule(inputs.resourceGroup, inputs.nsgName, inputs.ruleName, inputs.subscriptionId);
+    if (existingRule) {
+      throw new Error(`Generated NSG rule name already exists: ${inputs.ruleName}. Refusing to modify an existing rule.`);
+    }
+
+    saveCleanupState(inputs, execution);
+
     // Create rule with retry logic
     const rule = await retryWithBackoff(
-      () => createOrUpdateRule(inputs, sourceIP),
+      () => createRule(inputs, inputs.subscriptionId),
       'NSG rule creation'
     );
 
     // Verify rule creation
     const verifiedRule = await retryWithBackoff(
-      () => verifyRuleCreation(inputs.resourceGroup, inputs.nsgName, inputs.ruleName),
+      () => verifyRuleCreation(inputs.resourceGroup, inputs.nsgName, inputs.ruleName, inputs.subscriptionId),
       'Rule verification'
     );
+    if (verifiedRule.description !== inputs.ownershipDescription) {
+      throw new Error(`Created rule ownership check failed for ${inputs.ruleName}`);
+    }
 
     core.endGroup();
 
@@ -532,14 +429,6 @@ async function run() {
     core.setOutput('github-run-id', execution.run_id);
     core.setOutput('github-run-attempt', execution.run_attempt);
 
-    // Export to environment for post-action cleanup
-    core.exportVariable('NSG_RULE_NAME', inputs.ruleName);
-    core.exportVariable('NSG_NAME', inputs.nsgName);
-    core.exportVariable('RESOURCE_GROUP', inputs.resourceGroup);
-    core.exportVariable('SUBSCRIPTION_ID', inputs.subscriptionId);
-    core.exportVariable('NSG_CLEANUP_ENABLED', String(inputs.cleanupEnabled));
-    core.exportVariable('NSG_OPERATION_ID', execution.operation_id);
-
     core.endGroup();
 
     const duration = Math.round((Date.now() - startTime) / 1000);
@@ -552,26 +441,13 @@ async function run() {
     core.setOutput('operation-id', execution.operation_id);
     core.setOutput('github-run-id', execution.run_id);
     core.setOutput('github-run-attempt', execution.run_attempt);
-    // Still export cleanup params even on failure so post-action can attempt cleanup
-    const inputs = {
-      subscriptionId: core.getInput('subscription-id', { required: false }),
-      resourceGroup: core.getInput('resource-group', { required: false }),
-      nsgName: core.getInput('nsg-name', { required: false }),
-      ruleName: core.getInput('rule-name', { required: false }),
-      cleanupEnabled: toBoolean(core.getInput('cleanup-enabled')),
-    };
-    if (inputs.ruleName && inputs.nsgName && inputs.resourceGroup) {
-      core.exportVariable('NSG_RULE_NAME', inputs.ruleName);
-      core.exportVariable('NSG_NAME', inputs.nsgName);
-      core.exportVariable('RESOURCE_GROUP', inputs.resourceGroup);
-      core.exportVariable('SUBSCRIPTION_ID', inputs.subscriptionId);
-      core.exportVariable('NSG_CLEANUP_ENABLED', String(inputs.cleanupEnabled));
-      core.exportVariable('NSG_OPERATION_ID', execution.operation_id);
-    }
     await writeFailureSummary(error.message, failurePhase, execution);
     core.setFailed(error.message);
   }
 }
 
-// Execute the action
-run();
+if (require.main === module) {
+  run();
+}
+
+module.exports = { run, runAzureCli, saveCleanupState, validateInputs };

@@ -4,7 +4,7 @@ author: 'BC Government'
 
 inputs:
   subscription-id:
-    description: 'Azure Subscription ID'
+    description: 'Target subscription containing the NSG; may differ from the azure/login subscription'
     required: true
   resource-group:
     description: 'Azure Resource Group name'
@@ -13,16 +13,20 @@ inputs:
     description: 'Network Security Group name'
     required: true
   rule-name:
-    description: 'Name for the JIT access rule'
+    description: 'Base name for the JIT rule; a unique operation suffix is added automatically'
     required: true
   source-ip:
-    description: 'Source IPv4 address to allow (for example, resolved runner private IP)'
+    description: 'Caller-resolved runner private IPv4 address to allow; defaults to a /32 source prefix'
     required: false
     default: ''
   source-prefixes:
-    description: 'Optional comma-separated source address prefixes (IP/CIDR/*). Defaults to source-ip/32 when omitted.'
+    description: 'Optional comma-separated source IPv4/CIDR prefixes. Defaults to source-ip/32 when omitted.'
     required: false
     default: ''
+  allow-any-source:
+    description: "Allow '*' or 0.0.0.0/0 as a source prefix (not recommended)"
+    required: false
+    default: 'false'
   destination-ports:
     description: 'Destination ports (comma-separated or range, e.g., "80,443" or "3389")'
     required: true
@@ -41,8 +45,9 @@ inputs:
   priority:
     description: 'Rule priority (100-4096)'
     required: false
+    default: '3000'
   cleanup-enabled:
-    description: 'Enable post-action cleanup of the created NSG rule (true/false)'
+    description: 'Remove this operation-owned rule after the job; cleanup failures fail the job (true/false)'
     required: false
     default: 'true'
 
@@ -50,7 +55,7 @@ outputs:
   rule-id:
     description: 'Resource ID of the created NSG rule'
   rule-name:
-    description: 'Name of the NSG rule (for cleanup/verification)'
+    description: 'Unique name of the created NSG rule (includes an operation suffix)'
   nsg-name:
     description: 'Name of the NSG (for cleanup operations)'
   resource-group:

@@ -3,15 +3,6 @@ name: NSG JIT Rule Example
 on:
   workflow_dispatch:
     inputs:
-      azure_subscription_id:
-        description: Azure subscription ID
-        required: true
-      azure_resource_group:
-        description: Azure resource group name
-        required: true
-      azure_nsg_name:
-        description: NSG name
-        required: true
       rule_name:
         description: Name for the temporary rule
         required: false
@@ -29,13 +20,24 @@ on:
         required: false
         default: Inbound
       source_prefixes:
-        description: Optional source prefixes CSV (defaults to runner private IP/32)
+        description: Optional source prefixes CSV (defaults to the resolved runner private IP/32)
         required: false
         default: ''
+      allow_any_source:
+        description: Allow '*' or 0.0.0.0/0 as a source prefix (not recommended)
+        required: false
+        default: 'false'
       destination_prefixes:
         description: Optional destination prefixes CSV
         required: false
         default: '*'
+      targets:
+        description: >-
+          JSON array of targets. Each requires name, runner, subscriptionId,
+          resourceGroup, and nsgName. Optional fields include loginSubscriptionId
+          and per-target rule settings.
+        required: true
+        type: string
 
 permissions:
   id-token: write
@@ -43,8 +45,13 @@ permissions:
 
 jobs:
   create-jit-rule:
-    name: Create NSG JIT Rule
-    runs-on: ubuntu-latest
+    name: JIT ${{ matrix.target.name }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        target: ${{ fromJSON(inputs.targets) }}
+    runs-on: ${{ matrix.target.runner }}
 
     steps:
       - name: Azure Login (OIDC)
@@ -52,7 +59,7 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ inputs.azure_subscription_id }}
+          subscription-id: ${{ matrix.target.loginSubscriptionId || matrix.target.subscriptionId }}
 
       - name: Resolve runner private IP
         id: runner_ip
@@ -60,30 +67,44 @@ jobs:
         run: |
           set -euo pipefail
 
-          RUNNER_PRIVATE_IP="$(ip -4 route get 1.1.1.1 | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
-          if [[ ! "$RUNNER_PRIVATE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            echo "Failed to resolve private IPv4 from routing table."
+          RUNNER_INTERFACE="$(ip -4 route show default \
+            | awk 'NR == 1 {for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')"
+          if [[ -z "$RUNNER_INTERFACE" ]]; then
+            echo "Could not identify the runner's default-route network interface." >&2
             exit 1
           fi
 
-          echo "runner_ip=$RUNNER_PRIVATE_IP" >> "$GITHUB_OUTPUT"
+          RUNNER_PRIVATE_IP="$(ip -4 -o addr show dev "$RUNNER_INTERFACE" scope global \
+            | awk 'NR == 1 {split($4, address, "/"); print address[1]}')"
+          if ! python3 - "$RUNNER_PRIVATE_IP" <<'PY'
+          import ipaddress
+          import sys
+          ipaddress.IPv4Address(sys.argv[1])
+          PY
+          then
+            echo "Could not resolve a valid IPv4 address on interface $RUNNER_INTERFACE." >&2
+            exit 1
+          fi
+
           echo "runner_private_ip=$RUNNER_PRIVATE_IP" >> "$GITHUB_OUTPUT"
-          echo "Resolved runner private IP (VNet/internal): $RUNNER_PRIVATE_IP"
+          echo "Resolved runner private IP on $RUNNER_INTERFACE: $RUNNER_PRIVATE_IP"
 
       - name: Create NSG JIT Rule
         id: nsg_rule
         uses: bcgov/azure-lz-actions/actions/nsg-jit-rule@main
         with:
-          subscription-id: ${{ inputs.azure_subscription_id }}
-          resource-group: ${{ inputs.azure_resource_group }}
-          nsg-name: ${{ inputs.azure_nsg_name }}
-          rule-name: ${{ inputs.rule_name }}-${{ github.run_id }}
+          subscription-id: ${{ matrix.target.subscriptionId }}
+          resource-group: ${{ matrix.target.resourceGroup }}
+          nsg-name: ${{ matrix.target.nsgName }}
+          rule-name: ${{ matrix.target.ruleName || inputs.rule_name }}
           source-ip: ${{ steps.runner_ip.outputs.runner_private_ip }}
-          source-prefixes: ${{ inputs.source_prefixes }}
-          destination-ports: ${{ inputs.destination_ports }}
-          protocol: ${{ inputs.protocol }}
-          direction: ${{ inputs.direction }}
-          destination-prefixes: ${{ inputs.destination_prefixes }}
+          source-prefixes: ${{ matrix.target.sourcePrefixes || inputs.source_prefixes }}
+          allow-any-source: ${{ inputs.allow_any_source }}
+          destination-ports: ${{ matrix.target.destinationPorts || inputs.destination_ports }}
+          protocol: ${{ matrix.target.protocol || inputs.protocol }}
+          direction: ${{ matrix.target.direction || inputs.direction }}
+          destination-prefixes: ${{ matrix.target.destinationPrefixes || inputs.destination_prefixes }}
+          priority: ${{ matrix.target.priority }}
           cleanup-enabled: 'true'
 
       - name: Display Rule Creation Results
@@ -110,16 +131,19 @@ jobs:
       - name: Verify Rule Creation
         shell: bash
         env:
-          AZURE_RESOURCE_GROUP: ${{ inputs.azure_resource_group }}
-          AZURE_NSG_NAME: ${{ inputs.azure_nsg_name }}
+          AZURE_RESOURCE_GROUP: ${{ matrix.target.resourceGroup }}
+          AZURE_NSG_NAME: ${{ matrix.target.nsgName }}
           RULE_NAME: ${{ steps.nsg_rule.outputs.rule-name }}
         run: |
           echo "Verifying rule exists in NSG..."
+          RULE_QUERY='{name:name,direction:direction,protocol:protocol,'\
+            'sourceAddressPrefixes:sourceAddressPrefixes,destinationPortRanges:'\
+            'destinationPortRanges,access:access}'
           az network nsg rule show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --nsg-name "$AZURE_NSG_NAME" \
             --name "$RULE_NAME" \
-            --query '{name:name,direction:direction,protocol:protocol,sourceAddressPrefixes:sourceAddressPrefixes,destinationPortRanges:destinationPortRanges,access:access}' \
+            --query "$RULE_QUERY" \
             -o json
 
       # Cleanup is automatic via action post-step
