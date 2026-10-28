@@ -102,20 +102,18 @@ jobs:
       - name: Verify Rule Creation
         shell: bash
         env:
-          AZURE_RESOURCE_GROUP: ${{ matrix.target.resourceGroup }}
-          AZURE_NSG_NAME: ${{ matrix.target.nsgName }}
-          AZURE_SUBSCRIPTION_ID: ${{ matrix.target.subscriptionId }}
-          RULE_NAME: ${{ steps.nsg_rule.outputs.rule-name }}
+          RULE_ID: ${{ steps.nsg_rule.outputs.rule-id }}
         run: |
           echo "Verifying rule exists in NSG..."
+          if [[ -z "$RULE_ID" ]]; then
+            echo "The action did not return a rule resource ID." >&2
+            exit 1
+          fi
           RULE_QUERY='{name:name,direction:direction,protocol:protocol,'
           RULE_QUERY+='sourceAddressPrefixes:sourceAddressPrefixes,destinationPortRanges:'
           RULE_QUERY+='destinationPortRanges,access:access}'
           az network nsg rule show \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --nsg-name "$AZURE_NSG_NAME" \
-            --name "$RULE_NAME" \
-            --subscription "$AZURE_SUBSCRIPTION_ID" \
+            --ids "$RULE_ID" \
             --query "$RULE_QUERY" \
             -o json
 
