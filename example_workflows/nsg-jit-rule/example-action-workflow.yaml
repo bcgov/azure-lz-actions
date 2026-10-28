@@ -24,6 +24,9 @@ jobs:
       matrix:
         target: ${{ fromJSON(inputs.targets) }}
     runs-on: ${{ matrix.target.runner }}
+    concurrency:
+      group: nsg-jit-${{ matrix.target.subscriptionId }}-${{ matrix.target.resourceGroup }}-${{ matrix.target.nsgName }}
+      cancel-in-progress: false
 
     steps:
       - name: Azure Login (OIDC)

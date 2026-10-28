@@ -1,5 +1,5 @@
 name: 'NSG JIT Rule'
-description: 'Create or update a Network Security Group (NSG) just-in-time (JIT) access rule'
+description: 'Create a Network Security Group (NSG) just-in-time (JIT) access rule'
 author: 'BC Government'
 
 inputs:
@@ -32,20 +32,19 @@ inputs:
     required: true
   protocol:
     description: 'Protocol (Tcp, Udp, or *)'
-    required: true
+    required: false
     default: 'Tcp'
   direction:
     description: 'Rule direction (Inbound or Outbound)'
-    required: true
+    required: false
     default: 'Inbound'
   destination-prefixes:
     description: 'Optional comma-separated destination address prefixes (IP/CIDR/*). Defaults to * when omitted.'
     required: false
     default: '*'
   priority:
-    description: 'Rule priority (100-4096)'
+    description: 'Optional rule priority (100-4096); defaults to an available priority starting at 3000'
     required: false
-    default: '3000'
   cleanup-enabled:
     description: 'Remove this operation-owned rule after the job; cleanup failures fail the job (true/false)'
     required: false
@@ -65,7 +64,7 @@ outputs:
   source-ip:
     description: 'Source IPv4 address provided to the action'
   source-cidr:
-    description: 'Canonical source CIDR derived from source-ip (IP/32)'
+    description: 'Effective source CIDR when exactly one source prefix is configured'
   source-prefixes:
     description: 'Effective source address prefixes used by the rule (CSV)'
   destination-prefixes:

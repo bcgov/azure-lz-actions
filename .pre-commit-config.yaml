@@ -11,7 +11,9 @@ repos:
     rev: v6.0.0
     hooks:
       - id: end-of-file-fixer
+        exclude: '(^|/)dist(-cleanup)?/'
       - id: trailing-whitespace
+        exclude: '(^|/)dist(-cleanup)?/'
       - id: mixed-line-ending
         args: [--fix=lf]
       - id: check-merge-conflict
@@ -33,18 +35,9 @@ repos:
       - id: markdownlint-cli2
         exclude: '^(CODE_OF_CONDUCT|LICENSE|CONTRIBUTING)\.md$'
 
-# Configure behavior
-default_language_version:
-  python: python3.13
-
 # Exclude certain files/directories
 exclude: |
-  (?x)^(
-    node_modules/|
-    \.git/|
-    dist/|
-    build/
-  )$
+  (^|/)(node_modules|dist|dist-cleanup|build)/
 
 # Minimum pre-commit version required
 minimum_pre_commit_version: '2.15.0'

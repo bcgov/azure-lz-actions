@@ -148,7 +148,7 @@ async function cleanup({ actionCore = core, runAz = runAzureCli, sleep = ms => n
 
     actionCore.info(`Cleanup target: ${subscriptionId}/${resourceGroup}/${nsgName}/${ruleName}`);
 
-    await retryCleanup(
+    const removed = await retryCleanup(
       () => deleteRule({ resourceGroup, nsgName, ruleName, subscriptionId, expectedDescription, runAz }),
       'Rule deletion'
     );
@@ -162,7 +162,8 @@ async function cleanup({ actionCore = core, runAz = runAzureCli, sleep = ms => n
 
     const duration = Math.round((Date.now() - startTime) / 1000);
 
-    actionCore.info(`Cleanup complete for operation ${operationId}; removed rule ${ruleName} in ${duration}s`);
+    const cleanupStatus = removed ? 'Removed' : 'Already absent';
+    actionCore.info(`Cleanup complete for operation ${operationId}; status=${cleanupStatus} for rule ${ruleName} in ${duration}s`);
 
     await actionCore.summary
       .addHeading('NSG JIT Rule Cleanup Complete')
@@ -173,15 +174,13 @@ async function cleanup({ actionCore = core, runAz = runAzureCli, sleep = ms => n
         ['NSG', nsgName],
         ['Resource Group', resourceGroup],
         ['Duration', `${duration}s`],
-        ['Status', 'Removed']
+        ['Status', cleanupStatus]
       ])
       .write();
 
     cleanupLog.status = 'success';
     cleanupLog.duration_ms = Date.now() - startTime;
-    cleanupLog.rule_removed = ruleName;
-
-    actionCore.endGroup();
+    cleanupLog.rule_removed = removed ? ruleName : null;
 
   } catch (error) {
     actionCore.error(`Cleanup failed: ${error.message}`);

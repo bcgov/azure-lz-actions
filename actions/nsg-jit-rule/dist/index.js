@@ -20260,10 +20260,10 @@ var require_oidc_utils = __commonJS({
           var _a;
           const httpclient = _OidcClient.createHttpClient();
           const res = yield httpclient.getJson(id_token_url).catch((error) => {
-            throw new Error(`Failed to get ID Token.
-
+            throw new Error(`Failed to get ID Token. 
+ 
         Error Code : ${error.statusCode}
-
+ 
         Error Message: ${error.message}`);
           });
           const id_token = (_a = res.result) === null || _a === void 0 ? void 0 : _a.value;
@@ -22109,6 +22109,26 @@ var require_validation = __commonJS({
       const parsed = String(raw || "").split(",").map((prefix) => prefix.trim()).filter(Boolean);
       return parsed.length > 0 ? parsed : defaults;
     }
+    function normalizeDirection2(direction) {
+      return VALID_DIRECTIONS.find((value) => value.toLowerCase() === String(direction).toLowerCase()) || direction;
+    }
+    function selectPriority2(existingRules, direction, requestedPriority) {
+      const usedPriorities = new Set((existingRules || []).filter((rule) => String(rule.direction).toLowerCase() === String(direction).toLowerCase()).map((rule) => Number(rule.priority)));
+      if (String(requestedPriority || "").trim() !== "") {
+        const priority = Number(requestedPriority);
+        if (usedPriorities.has(priority)) {
+          throw new Error(`Priority ${priority} is already in use for ${direction} rules on this NSG`);
+        }
+        return String(priority);
+      }
+      for (let priority = 3e3; priority <= PRIORITY_MAX; priority++) {
+        if (!usedPriorities.has(priority)) return String(priority);
+      }
+      for (let priority = 2999; priority >= PRIORITY_MIN; priority--) {
+        if (!usedPriorities.has(priority)) return String(priority);
+      }
+      throw new Error(`No available priority remains for ${direction} rules on this NSG`);
+    }
     function isValidAddressPrefix(prefix) {
       if (prefix === "*") return true;
       const parts = prefix.split("/");
@@ -22146,11 +22166,11 @@ var require_validation = __commonJS({
       if (!VALID_PROTOCOLS.includes(inputs.protocol.toUpperCase())) {
         errors.push(`Invalid protocol: ${inputs.protocol}. Must be one of: ${VALID_PROTOCOLS.join(", ")}`);
       }
-      if (!VALID_DIRECTIONS.includes(inputs.direction)) {
+      if (!VALID_DIRECTIONS.some((direction) => direction.toLowerCase() === String(inputs.direction).toLowerCase())) {
         errors.push("Invalid direction. Must be 'Inbound' or 'Outbound'");
       }
       const priority = String(inputs.priority || "").trim();
-      if (!/^\d+$/.test(priority) || Number(priority) < PRIORITY_MIN || Number(priority) > PRIORITY_MAX) {
+      if (priority !== "" && (!/^\d+$/.test(priority) || Number(priority) < PRIORITY_MIN || Number(priority) > PRIORITY_MAX)) {
         errors.push(`Invalid priority: ${inputs.priority}. Must be an integer between ${PRIORITY_MIN}-${PRIORITY_MAX}`);
       }
       if (!isValidPortRange(inputs.destinationPorts)) {
@@ -22214,7 +22234,7 @@ var require_validation = __commonJS({
         "--destination-address-prefixes",
         ...inputs.destinationPrefixes,
         "--destination-port-ranges",
-        inputs.destinationPorts,
+        ...inputs.destinationPorts.split(",").map((port) => port.trim()).filter(Boolean),
         "--description",
         inputs.ownershipDescription,
         "-o",
@@ -22222,7 +22242,7 @@ var require_validation = __commonJS({
       ];
     }
     function isNotFoundError2(error) {
-      const message = [error.code, error.status, error.stderr, error.message].map((value) => value === void 0 ? "" : String(value)).join(" ").toLowerCase();
+      const message = [error.code, error.status, error.stderr].map((value) => value === void 0 ? "" : String(value)).join(" ").toLowerCase();
       return message.includes("resourcenotfound") || message.includes("notfound") || message.includes("does not exist") || message.includes("could not be found") || message.includes("status code: 404") || message.includes(" 404");
     }
     module2.exports = {
@@ -22230,8 +22250,10 @@ var require_validation = __commonJS({
       isNotFoundError: isNotFoundError2,
       isValidAddressPrefix,
       normalizePrefixes: normalizePrefixes2,
+      normalizeDirection: normalizeDirection2,
       operationRuleName: operationRuleName2,
       ownershipDescription: ownershipDescription2,
+      selectPriority: selectPriority2,
       toBoolean: toBoolean2,
       validateInputs: validateInputs2
     };
@@ -22245,9 +22267,11 @@ var { execFileSync } = require("child_process");
 var {
   buildCreateRuleArgs,
   isNotFoundError,
+  normalizeDirection,
   normalizePrefixes,
   operationRuleName,
   ownershipDescription,
+  selectPriority,
   toBoolean,
   validateInputs
 } = require_validation();
@@ -22273,7 +22297,8 @@ function logWithContext(level, message, execution) {
 }
 async function writeSuccessSummary(inputs, sourceIP, duration, execution) {
   const sourceIpDisplay = sourceIP || "(not provided)";
-  const sourceCidrDisplay = sourceIP ? `${sourceIP}/32` : "(not derived)";
+  const sourceCidr = inputs.sourcePrefixes.length === 1 && inputs.sourcePrefixes[0] !== "*" ? inputs.sourcePrefixes[0].includes("/") ? inputs.sourcePrefixes[0] : `${inputs.sourcePrefixes[0]}/32` : "";
+  const sourceCidrDisplay = sourceCidr || "(not singular)";
   await core.summary.addHeading("NSG JIT Rule Created").addTable([
     [{ data: "Property", header: true }, { data: "Value", header: true }],
     ["Operation ID", execution.operation_id],
@@ -22323,7 +22348,6 @@ async function verifyAzureContext(subscriptionId) {
   try {
     core.debug(`Verifying Azure CLI authentication and target subscription ${subscriptionId}...`);
     await retryWithBackoff(async () => {
-      execFileSync("az", ["account", "set", "--subscription", subscriptionId], { encoding: "utf8", windowsHide: true });
       const selectedSubscription = runAzureCli(["account", "show", "--query", "id", "-o", "tsv"], subscriptionId).trim();
       if (selectedSubscription.toLowerCase() !== subscriptionId.toLowerCase()) {
         throw new Error(`Azure CLI selected subscription ${selectedSubscription}, expected ${subscriptionId}`);
@@ -22345,22 +22369,6 @@ async function verifyAzureContext(subscriptionId) {
     throw new Error(`Azure CLI authentication or target subscription access failed: ${error.message}. Ensure azure/login completed and the identity can access the target subscription.`);
   }
 }
-async function verifyResourceGroup(resourceGroup, subscriptionId) {
-  try {
-    core.debug(`Verifying resource group exists: ${resourceGroup}`);
-    await retryWithBackoff(async () => {
-      const existsOutput = runAzureCli(["group", "exists", "--name", resourceGroup, "-o", "tsv"], subscriptionId).trim().toLowerCase();
-      if (existsOutput !== "true") {
-        throw new Error(`Resource group not found: ${resourceGroup}`);
-      }
-      runAzureCli(["network", "nsg", "list", "--resource-group", resourceGroup, "--query", "[].name", "-o", "json"], subscriptionId);
-      return true;
-    }, `Verify resource group ${resourceGroup}`);
-    core.info(`Resource group verified: ${resourceGroup}`);
-  } catch (error) {
-    throw new Error(`Resource group verification failed: ${error.message}. Ensure RG exists and you have Network Contributor role.`);
-  }
-}
 async function getNSGState(resourceGroup, nsgName, subscriptionId) {
   try {
     core.debug(`Checking NSG state: ${nsgName}`);
@@ -22373,7 +22381,7 @@ async function getNSGState(resourceGroup, nsgName, subscriptionId) {
       "--name",
       nsgName,
       "--query",
-      "{name:name, id:id, location:location, securityRules:securityRules[].name}",
+      "{name:name, id:id, location:location, securityRules:securityRules[].{priority:priority,direction:direction}}",
       "-o",
       "json"
     ], subscriptionId);
@@ -22416,6 +22424,19 @@ async function createRule(inputs, subscriptionId) {
     return rule;
   } catch (error) {
     throw new Error(`Failed to create NSG rule: ${error.message}`);
+  }
+}
+async function createRuleWithAvailablePriority(inputs, subscriptionId, requestedPriority) {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await retryWithBackoff(() => createRule(inputs, subscriptionId), "NSG rule creation");
+    } catch (error) {
+      const priorityConflict = /SecurityRuleConflict|priority/i.test(error.message || "");
+      if (requestedPriority || !priorityConflict || attempt === MAX_RETRIES) throw error;
+      const currentState = await getNSGState(inputs.resourceGroup, inputs.nsgName, subscriptionId);
+      inputs.priority = selectPriority(currentState.securityRules, inputs.direction, "");
+      core.warning(`Priority conflict; retrying with available priority ${inputs.priority}`);
+    }
   }
 }
 async function verifyRuleCreation(resourceGroup, nsgName, ruleName, subscriptionId) {
@@ -22517,11 +22538,11 @@ async function run() {
       sourcePrefixesRaw: core.getInput("source-prefixes") || "",
       allowAnySource: core.getInput("allow-any-source"),
       destinationPorts: core.getInput("destination-ports", { required: true }),
-      protocol: core.getInput("protocol", { required: true }),
-      direction: core.getInput("direction", { required: true }),
+      protocol: core.getInput("protocol"),
+      direction: core.getInput("direction"),
       destinationPrefixesRaw: core.getInput("destination-prefixes") || "",
-      priority: core.getInput("priority") || "3000",
-      cleanupEnabled: toBoolean(core.getInput("cleanup-enabled")),
+      priority: core.getInput("priority"),
+      cleanupEnabled: core.getInput("cleanup-enabled"),
       operationId
     };
     const validationErrors = validateInputs(inputs);
@@ -22530,6 +22551,8 @@ async function run() {
       throw new Error(`Validation failed:
   - ${validationErrors.join("\n  - ")}`);
     }
+    inputs.cleanupEnabled = toBoolean(inputs.cleanupEnabled);
+    inputs.direction = normalizeDirection(inputs.direction);
     core.info("\u2713 All inputs validated");
     core.endGroup();
     core.startGroup("\u{1F510} Azure Authentication");
@@ -22538,7 +22561,6 @@ async function run() {
     core.endGroup();
     core.startGroup("\u{1F50D} Pre-flight Validation");
     failurePhase = "preflight-validation";
-    await verifyResourceGroup(inputs.resourceGroup, inputs.subscriptionId);
     const nsgState = await getNSGState(inputs.resourceGroup, inputs.nsgName, inputs.subscriptionId);
     core.info(`NSG verified: ${nsgState.name} (Location: ${nsgState.location})`);
     core.endGroup();
@@ -22548,6 +22570,8 @@ async function run() {
     const sourcePrefixDefaults = sourceIP ? [`${sourceIP}/32`] : [];
     inputs.sourcePrefixes = normalizePrefixes(inputs.sourcePrefixesRaw, sourcePrefixDefaults);
     inputs.destinationPrefixes = normalizePrefixes(inputs.destinationPrefixesRaw, ["*"]);
+    const requestedPriority = inputs.priority;
+    inputs.priority = selectPriority(nsgState.securityRules, inputs.direction, requestedPriority);
     inputs.ruleName = operationRuleName(inputs.ruleName, operationId);
     inputs.ownershipDescription = ownershipDescription(operationId);
     if (sourceIP) {
@@ -22565,10 +22589,7 @@ async function run() {
       throw new Error(`Generated NSG rule name already exists: ${inputs.ruleName}. Refusing to modify an existing rule.`);
     }
     saveCleanupState(inputs, execution);
-    const rule = await retryWithBackoff(
-      () => createRule(inputs, inputs.subscriptionId),
-      "NSG rule creation"
-    );
+    const rule = await createRuleWithAvailablePriority(inputs, inputs.subscriptionId, requestedPriority);
     const verifiedRule = await retryWithBackoff(
       () => verifyRuleCreation(inputs.resourceGroup, inputs.nsgName, inputs.ruleName, inputs.subscriptionId),
       "Rule verification"
@@ -22587,10 +22608,13 @@ async function run() {
     core.setOutput("resource-group", inputs.resourceGroup);
     core.setOutput("subscription-id", inputs.subscriptionId);
     core.setOutput("source-ip", sourceIP);
-    core.setOutput("source-cidr", sourceIP ? `${sourceIP}/32` : "");
+    core.setOutput("source-cidr", inputs.sourcePrefixes.length === 1 && inputs.sourcePrefixes[0] !== "*" ? inputs.sourcePrefixes[0].includes("/") ? inputs.sourcePrefixes[0] : `${inputs.sourcePrefixes[0]}/32` : "");
     core.setOutput("source-prefixes", inputs.sourcePrefixes.join(","));
     core.setOutput("destination-prefixes", inputs.destinationPrefixes.join(","));
-    core.setOutput("pre-state", JSON.stringify(nsgState));
+    core.setOutput("pre-state", JSON.stringify({
+      ...nsgState,
+      securityRules: nsgState.securityRules.map((rule2) => rule2.name)
+    }));
     core.setOutput("post-state", JSON.stringify(verifiedRule));
     core.setOutput("status", "created");
     core.setOutput("timestamp", (/* @__PURE__ */ new Date()).toISOString());

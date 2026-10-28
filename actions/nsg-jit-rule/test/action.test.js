@@ -3,9 +3,12 @@ const assert = require('node:assert/strict');
 const { cleanup } = require('../cleanup');
 const {
   buildCreateRuleArgs,
+  isNotFoundError,
   isValidAddressPrefix,
+  normalizeDirection,
   operationRuleName,
   ownershipDescription,
+  selectPriority,
   validateInputs
 } = require('../validation');
 const { runAzureCli, saveCleanupState } = require('../index');
@@ -27,18 +30,19 @@ const validInputs = {
 };
 
 function fakeCore(initialState = {}) {
-  const state = { failed: [], warnings: [], infos: [] };
+  const state = { failed: [], warnings: [], infos: [], groupEnds: 0 };
   const savedState = new Map(Object.entries(initialState));
   const summary = {
     addHeading() { return this; },
-    addTable() { return this; },
+    addTable(rows) { this.tables.push(rows); return this; },
+    tables: [],
     write: async () => {}
   };
   return {
     state,
     summary,
     startGroup() {},
-    endGroup() {},
+    endGroup() { state.groupEnds += 1; },
     warning(message) { state.warnings.push(message); },
     error(message) { state.warnings.push(message); },
     info(message) { state.infos.push(message); },
@@ -54,6 +58,24 @@ test('validates source IPs, CIDRs, and port ranges', () => {
   assert.equal(isValidAddressPrefix('10.20.1.15/32'), true);
   assert.equal(isValidAddressPrefix('300.20.1.15/32'), false);
   assert.equal(isValidAddressPrefix('10.20.1.0/33'), false);
+});
+
+test('rejects invalid cleanup-enabled values before boolean conversion', () => {
+  const errors = validateInputs({ ...validInputs, cleanupEnabled: 'yes' });
+  assert.ok(errors.some(error => error.includes("cleanup-enabled must be 'true' or 'false'")));
+});
+
+test('normalizes direction case and selects a free NSG priority', () => {
+  assert.equal(normalizeDirection('inbound'), 'Inbound');
+  assert.deepEqual(validateInputs({ ...validInputs, direction: 'inbound' }), []);
+  assert.equal(selectPriority([{ priority: 3000, direction: 'Inbound' }], 'Inbound', ''), '3001');
+  assert.equal(selectPriority([{ priority: 3000, direction: 'Outbound' }], 'Inbound', ''), '3000');
+  assert.throws(() => selectPriority([{ priority: 3000, direction: 'Inbound' }], 'Inbound', '3000'), /already in use/);
+});
+
+test('classifies Azure not-found errors without matching echoed command text', () => {
+  assert.equal(isNotFoundError({ message: 'az ... target-notfound-nsg ... authorization failed' }), false);
+  assert.equal(isNotFoundError({ stderr: 'ResourceNotFound: the requested resource was not found' }), true);
 });
 
 test('rejects unsafe priority text, invalid ranges, and unrestricted sources by default', () => {
@@ -91,6 +113,8 @@ test('builds Azure CLI arguments without shell interpolation', () => {
   });
   assert.ok(args.includes('3000'));
   assert.ok(args.includes('10.20.1.15/32'));
+  const portArgumentIndex = args.indexOf('--destination-port-ranges') + 1;
+  assert.deepEqual(args.slice(portArgumentIndex, portArgumentIndex + 2), ['443', '8443']);
 
   let invocation;
   runAzureCli(['network', 'nsg', 'show'], validInputs.subscriptionId, (file, commandArgs, options) => {
@@ -114,10 +138,6 @@ test('cleanup refuses to delete a same-name rule without this operation marker',
   const commands = [];
 
   await cleanup({
-    env: {
-      NSG_RULE_NAME: 'a-different-action-rule',
-      RESOURCE_GROUP: 'wrong-resource-group'
-    },
     actionCore,
     sleep: async () => {},
     runAz: args => {
@@ -157,6 +177,31 @@ test('cleanup removes an owned rule and reports success', async () => {
 
   assert.equal(deleted, true);
   assert.deepEqual(actionCore.state.failed, []);
+  assert.equal(actionCore.state.groupEnds, 1);
+});
+
+test('cleanup reports an absent rule instead of claiming it removed one', async () => {
+  const actionCore = fakeCore({
+    'rule-name': 'runner-123',
+    'nsg-name': 'runner-nsg',
+    'resource-group': 'private-network-rg',
+    'subscription-id': validInputs.subscriptionId,
+    'ownership-description': 'expected marker',
+    'operation-id': 'test-operation'
+  });
+
+  await cleanup({
+    actionCore,
+    runAz: () => {
+      const error = new Error('resource was not found');
+      error.stderr = '(ResourceNotFound)';
+      throw error;
+    },
+    sleep: async () => {}
+  });
+
+  assert.deepEqual(actionCore.state.failed, []);
+  assert.ok(actionCore.summary.tables.flat().some(row => Array.isArray(row) && row[0] === 'Status' && row[1] === 'Already absent'));
 });
 
 test('cleanup failure marks the action failed', async () => {

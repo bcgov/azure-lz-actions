@@ -11,14 +11,19 @@ by the runner's default route.
 ## Prerequisites
 
 - The target resource group and NSG must already exist. This action creates and removes security rules only.
-- Configure the GitHub-hosted runner for Azure VNet connectivity and confirm it
-  can route to the target private endpoint or resource.
+- Use a GitHub-hosted larger runner configured for Azure VNet connectivity, or
+  another runner with the required private route. A standard `ubuntu-latest`
+  hosted runner cannot reach a private VNet by default.
 - Run `azure/login@v3` before this action using OIDC. Grant the workflow
   `id-token: write` permission.
 - Ensure Azure CLI is installed on the runner.
-- Grant the federated identity read access to the resource group and NSG, and
-  permission to create, read, and delete NSG security rules. Scope access to the
-  NSG or resource group where practical.
+- Grant the federated identity these permissions on the target NSG:
+  `Microsoft.Network/networkSecurityGroups/read`,
+  `Microsoft.Network/networkSecurityGroups/securityRules/read`,
+  `Microsoft.Network/networkSecurityGroups/securityRules/write`, and
+  `Microsoft.Network/networkSecurityGroups/securityRules/delete`. The action
+  verifies access by reading that NSG directly and does not require
+  resource-group-wide read access.
 - Resolve the runner's private IPv4 address and pass it as `source-ip`.
 
 The `subscription-id` input identifies the NSG's subscription. It may differ
@@ -41,7 +46,7 @@ permissions:
 
 jobs:
   create-jit-rule:
-    runs-on: ubuntu-latest
+    runs-on: <vnet-runner-label>
     steps:
       - name: Azure Login (OIDC)
         uses: azure/login@v3
@@ -69,7 +74,7 @@ jobs:
 
       - name: Open temporary NSG access
         id: nsg_rule
-        uses: bcgov/azure-lz-actions/actions/nsg-jit-rule@v1.2.0
+        uses: bcgov/azure-lz-actions/actions/nsg-jit-rule@main
         with:
           subscription-id: ${{ secrets.AZURE_TARGET_SUBSCRIPTION_ID }}
           resource-group: private-network-rg
@@ -106,7 +111,9 @@ optional `loginSubscriptionId` and per-target `ruleName`,
 `destinationPrefixes`, `destinationPorts`, `protocol`, `direction`, and `priority`
 settings. Destination prefixes and ports are comma-separated strings.
 Omitted settings default to rule name `gha-temp-allow`, destination ports `3389`, protocol `Tcp`,
-direction `Inbound`, destination prefixes `*`, and priority `3000`.
+direction `Inbound`, destination prefixes `*`, and an available priority starting at `3000`. To
+prevent simultaneous workflows targeting the same NSG from selecting the same free priority,
+serialize them with a concurrency group based on subscription, resource group, and NSG name.
 
 For example, provide this JSON as the workflow's `targets` input:
 
@@ -147,13 +154,13 @@ subscription.
 | `nsg-name` | Yes | Target Network Security Group | None |
 | `rule-name` | Yes | Base name; the action adds a unique operation suffix | None |
 | `destination-ports` | Yes | Ports, ordered ranges, or `*`; ports must be 1-65535 | None |
-| `protocol` | Yes | `Tcp`, `Udp`, or `*` | `Tcp` |
-| `direction` | Yes | `Inbound` or `Outbound` | `Inbound` |
+| `protocol` | No | `Tcp`, `Udp`, or `*` | `Tcp` |
+| `direction` | No | `Inbound` or `Outbound` | `Inbound` |
 | `source-ip` | No | Caller-resolved private IPv4; defaults to a `/32` source prefix | Empty |
 | `source-prefixes` | No | Comma-separated IPv4 addresses/CIDRs; overrides the `source-ip` default | `source-ip/32` |
 | `allow-any-source` | No | Permit `*` or `0.0.0.0/0` sources; avoid unless required | `false` |
 | `destination-prefixes` | No | Comma-separated IPv4 addresses/CIDRs or `*` | `*` |
-| `priority` | No | NSG rule priority from 100 through 4096 | `3000` |
+| `priority` | No | NSG rule priority from 100 through 4096; omitted values use a free priority | Available priority |
 | `cleanup-enabled` | No | Remove this operation's rule after the job | `true` |
 
 The example workflows always pass the runner's resolved private IP as `source-ip`, giving it a `/32` source prefix.
@@ -167,12 +174,14 @@ and `0.0.0.0/0` require `allow-any-source: 'true'` and are not recommended.
 | `rule-id` | Azure resource ID of the created rule |
 | `rule-name` | Actual unique rule name, including the operation suffix |
 | `nsg-name`, `resource-group`, `subscription-id` | Target resource identifiers |
-| `source-ip`, `source-cidr`, `source-prefixes` | Source input and effective source scope |
+| `source-ip`, `source-cidr`, `source-prefixes` | Source input and effective prefixes |
 | `destination-prefixes` | Effective destination scope |
 | `pre-state`, `post-state` | NSG state before creation and rule state after creation, as JSON |
 | `status`, `error` | Main operation result and error; cleanup failure separately fails the job |
 | `timestamp`, `operation-id` | Creation timestamp and operation correlation ID |
 | `github-run-id`, `github-run-attempt` | GitHub run correlation values |
+
+The `source-cidr` output is set only when the effective source scope contains one prefix.
 
 The action writes creation and cleanup details to the job summary. Each rule
 description includes an operation marker; cleanup deletes only a matching rule.
@@ -181,6 +190,15 @@ with manual remediation guidance.
 
 Setting `cleanup-enabled: 'false'` retains the rule and transfers cleanup
 responsibility to the caller. Avoid this for temporary access unless required.
+If the runner is lost or a job is force-cancelled before the post-step runs, the
+rule may remain. Periodically review rules with descriptions beginning
+`Managed by nsg-jit-rule; operation=` and remove stale rules after verifying
+their ownership and age.
+
+The example uses `@main` because this repository does not yet have a release
+tag. For production workflows, replace it with a reviewed release tag or pin a
+full commit SHA. Replace `<vnet-runner-label>` with the label of your configured
+VNet-connected runner.
 
 ## Troubleshooting
 

@@ -20260,10 +20260,10 @@ var require_oidc_utils = __commonJS({
           var _a;
           const httpclient = _OidcClient.createHttpClient();
           const res = yield httpclient.getJson(id_token_url).catch((error) => {
-            throw new Error(`Failed to get ID Token.
-
+            throw new Error(`Failed to get ID Token. 
+ 
         Error Code : ${error.statusCode}
-
+ 
         Error Message: ${error.message}`);
           });
           const id_token = (_a = res.result) === null || _a === void 0 ? void 0 : _a.value;
@@ -22109,6 +22109,26 @@ var require_validation = __commonJS({
       const parsed = String(raw || "").split(",").map((prefix) => prefix.trim()).filter(Boolean);
       return parsed.length > 0 ? parsed : defaults;
     }
+    function normalizeDirection(direction) {
+      return VALID_DIRECTIONS.find((value) => value.toLowerCase() === String(direction).toLowerCase()) || direction;
+    }
+    function selectPriority(existingRules, direction, requestedPriority) {
+      const usedPriorities = new Set((existingRules || []).filter((rule) => String(rule.direction).toLowerCase() === String(direction).toLowerCase()).map((rule) => Number(rule.priority)));
+      if (String(requestedPriority || "").trim() !== "") {
+        const priority = Number(requestedPriority);
+        if (usedPriorities.has(priority)) {
+          throw new Error(`Priority ${priority} is already in use for ${direction} rules on this NSG`);
+        }
+        return String(priority);
+      }
+      for (let priority = 3e3; priority <= PRIORITY_MAX; priority++) {
+        if (!usedPriorities.has(priority)) return String(priority);
+      }
+      for (let priority = 2999; priority >= PRIORITY_MIN; priority--) {
+        if (!usedPriorities.has(priority)) return String(priority);
+      }
+      throw new Error(`No available priority remains for ${direction} rules on this NSG`);
+    }
     function isValidAddressPrefix(prefix) {
       if (prefix === "*") return true;
       const parts = prefix.split("/");
@@ -22146,11 +22166,11 @@ var require_validation = __commonJS({
       if (!VALID_PROTOCOLS.includes(inputs.protocol.toUpperCase())) {
         errors.push(`Invalid protocol: ${inputs.protocol}. Must be one of: ${VALID_PROTOCOLS.join(", ")}`);
       }
-      if (!VALID_DIRECTIONS.includes(inputs.direction)) {
+      if (!VALID_DIRECTIONS.some((direction) => direction.toLowerCase() === String(inputs.direction).toLowerCase())) {
         errors.push("Invalid direction. Must be 'Inbound' or 'Outbound'");
       }
       const priority = String(inputs.priority || "").trim();
-      if (!/^\d+$/.test(priority) || Number(priority) < PRIORITY_MIN || Number(priority) > PRIORITY_MAX) {
+      if (priority !== "" && (!/^\d+$/.test(priority) || Number(priority) < PRIORITY_MIN || Number(priority) > PRIORITY_MAX)) {
         errors.push(`Invalid priority: ${inputs.priority}. Must be an integer between ${PRIORITY_MIN}-${PRIORITY_MAX}`);
       }
       if (!isValidPortRange(inputs.destinationPorts)) {
@@ -22214,7 +22234,7 @@ var require_validation = __commonJS({
         "--destination-address-prefixes",
         ...inputs.destinationPrefixes,
         "--destination-port-ranges",
-        inputs.destinationPorts,
+        ...inputs.destinationPorts.split(",").map((port) => port.trim()).filter(Boolean),
         "--description",
         inputs.ownershipDescription,
         "-o",
@@ -22222,7 +22242,7 @@ var require_validation = __commonJS({
       ];
     }
     function isNotFoundError2(error) {
-      const message = [error.code, error.status, error.stderr, error.message].map((value) => value === void 0 ? "" : String(value)).join(" ").toLowerCase();
+      const message = [error.code, error.status, error.stderr].map((value) => value === void 0 ? "" : String(value)).join(" ").toLowerCase();
       return message.includes("resourcenotfound") || message.includes("notfound") || message.includes("does not exist") || message.includes("could not be found") || message.includes("status code: 404") || message.includes(" 404");
     }
     module2.exports = {
@@ -22230,8 +22250,10 @@ var require_validation = __commonJS({
       isNotFoundError: isNotFoundError2,
       isValidAddressPrefix,
       normalizePrefixes,
+      normalizeDirection,
       operationRuleName,
       ownershipDescription,
+      selectPriority,
       toBoolean,
       validateInputs
     };
@@ -22364,7 +22386,7 @@ async function cleanup({ actionCore = core, runAz = runAzureCli, sleep = (ms) =>
       throw new Error("Cleanup subscription or ownership marker is missing; refusing to delete any rule");
     }
     actionCore.info(`Cleanup target: ${subscriptionId}/${resourceGroup}/${nsgName}/${ruleName}`);
-    await retryCleanup(
+    const removed = await retryCleanup(
       () => deleteRule({ resourceGroup, nsgName, ruleName, subscriptionId, expectedDescription, runAz }),
       "Rule deletion"
     );
@@ -22374,7 +22396,8 @@ async function cleanup({ actionCore = core, runAz = runAzureCli, sleep = (ms) =>
     );
     actionCore.endGroup();
     const duration = Math.round((Date.now() - startTime) / 1e3);
-    actionCore.info(`Cleanup complete for operation ${operationId}; removed rule ${ruleName} in ${duration}s`);
+    const cleanupStatus = removed ? "Removed" : "Already absent";
+    actionCore.info(`Cleanup complete for operation ${operationId}; status=${cleanupStatus} for rule ${ruleName} in ${duration}s`);
     await actionCore.summary.addHeading("NSG JIT Rule Cleanup Complete").addTable([
       [{ data: "Property", header: true }, { data: "Value", header: true }],
       ["Operation ID", operationId],
@@ -22382,12 +22405,11 @@ async function cleanup({ actionCore = core, runAz = runAzureCli, sleep = (ms) =>
       ["NSG", nsgName],
       ["Resource Group", resourceGroup],
       ["Duration", `${duration}s`],
-      ["Status", "Removed"]
+      ["Status", cleanupStatus]
     ]).write();
     cleanupLog.status = "success";
     cleanupLog.duration_ms = Date.now() - startTime;
-    cleanupLog.rule_removed = ruleName;
-    actionCore.endGroup();
+    cleanupLog.rule_removed = removed ? ruleName : null;
   } catch (error) {
     actionCore.error(`Cleanup failed: ${error.message}`);
     cleanupLog.status = "error";

@@ -21,6 +21,33 @@ function normalizePrefixes(raw, defaults) {
   return parsed.length > 0 ? parsed : defaults;
 }
 
+function normalizeDirection(direction) {
+  return VALID_DIRECTIONS.find(value => value.toLowerCase() === String(direction).toLowerCase()) || direction;
+}
+
+function selectPriority(existingRules, direction, requestedPriority) {
+  const usedPriorities = new Set((existingRules || [])
+    .filter(rule => String(rule.direction).toLowerCase() === String(direction).toLowerCase())
+    .map(rule => Number(rule.priority)));
+
+  if (String(requestedPriority || '').trim() !== '') {
+    const priority = Number(requestedPriority);
+    if (usedPriorities.has(priority)) {
+      throw new Error(`Priority ${priority} is already in use for ${direction} rules on this NSG`);
+    }
+    return String(priority);
+  }
+
+  for (let priority = 3000; priority <= PRIORITY_MAX; priority++) {
+    if (!usedPriorities.has(priority)) return String(priority);
+  }
+  for (let priority = 2999; priority >= PRIORITY_MIN; priority--) {
+    if (!usedPriorities.has(priority)) return String(priority);
+  }
+
+  throw new Error(`No available priority remains for ${direction} rules on this NSG`);
+}
+
 function isValidAddressPrefix(prefix) {
   if (prefix === '*') return true;
 
@@ -65,12 +92,12 @@ function validateInputs(inputs) {
   if (!VALID_PROTOCOLS.includes(inputs.protocol.toUpperCase())) {
     errors.push(`Invalid protocol: ${inputs.protocol}. Must be one of: ${VALID_PROTOCOLS.join(', ')}`);
   }
-  if (!VALID_DIRECTIONS.includes(inputs.direction)) {
+  if (!VALID_DIRECTIONS.some(direction => direction.toLowerCase() === String(inputs.direction).toLowerCase())) {
     errors.push("Invalid direction. Must be 'Inbound' or 'Outbound'");
   }
 
   const priority = String(inputs.priority || '').trim();
-  if (!/^\d+$/.test(priority) || Number(priority) < PRIORITY_MIN || Number(priority) > PRIORITY_MAX) {
+  if (priority !== '' && (!/^\d+$/.test(priority) || Number(priority) < PRIORITY_MIN || Number(priority) > PRIORITY_MAX)) {
     errors.push(`Invalid priority: ${inputs.priority}. Must be an integer between ${PRIORITY_MIN}-${PRIORITY_MAX}`);
   }
 
@@ -129,14 +156,14 @@ function buildCreateRuleArgs(inputs) {
     '--protocol', inputs.protocol.toUpperCase(),
     '--source-address-prefixes', ...inputs.sourcePrefixes,
     '--destination-address-prefixes', ...inputs.destinationPrefixes,
-    '--destination-port-ranges', inputs.destinationPorts,
+    '--destination-port-ranges', ...inputs.destinationPorts.split(',').map(port => port.trim()).filter(Boolean),
     '--description', inputs.ownershipDescription,
     '-o', 'json'
   ];
 }
 
 function isNotFoundError(error) {
-  const message = [error.code, error.status, error.stderr, error.message]
+  const message = [error.code, error.status, error.stderr]
     .map(value => value === undefined ? '' : String(value))
     .join(' ')
     .toLowerCase();
@@ -150,8 +177,10 @@ module.exports = {
   isNotFoundError,
   isValidAddressPrefix,
   normalizePrefixes,
+  normalizeDirection,
   operationRuleName,
   ownershipDescription,
+  selectPriority,
   toBoolean,
   validateInputs
 };

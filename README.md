@@ -10,7 +10,7 @@ This repository contains reusable GitHub Actions for common Azure infrastructure
 
 ### Available Actions
 
-- **[nsg-jit-rule](./actions/nsg-jit-rule)** — Create or update Network Security
+- **[nsg-jit-rule](./actions/nsg-jit-rule)** — Create Network Security
   Group (NSG) just-in-time access rules for temporary, secure resource access.
 
 ## Repository Structure
@@ -41,7 +41,7 @@ Workflows can call actions directly without running `npm ci` during job executio
 
 ```yaml
 - name: Use action
-  uses: bcgov/azure-lz-actions/actions/<action-name>@v1.2.0
+  uses: bcgov/azure-lz-actions/actions/<action-name>@main
   with:
     # ... inputs
 ```
@@ -52,13 +52,13 @@ opening a pull request.
 ### General Pattern
 
 ```yaml
-- uses: bcgov/azure-lz-actions/actions/<action-name>@v1.2.0
+- uses: bcgov/azure-lz-actions/actions/<action-name>@main
   with:
     # Action-specific inputs
 ```
 
-Replace the example version with a reviewed release tag or full commit SHA. Use
-`@main` only when testing unreleased changes.
+The repository does not yet have release tags, so the examples use `@main`.
+For production, replace it with a reviewed release tag or pin a full commit SHA.
 
 For [actions/nsg-jit-rule](./actions/nsg-jit-rule), the caller resolves and passes
 the runner's private IPv4 address before invoking the action. The runner must

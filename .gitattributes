@@ -11,6 +11,9 @@ Makefile text eol=lf
 package.json text eol=lf
 package-lock.json text eol=lf
 
+# Bundles preserve whitespace inside third-party template strings.
+actions/**/dist*/** whitespace=-blank-at-eol
+
 # Markdown files
 *.md text eol=lf
 
