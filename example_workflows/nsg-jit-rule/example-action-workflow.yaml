@@ -1,0 +1,120 @@
+name: NSG JIT Rule Example
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: >-
+          JSON array of targets. Each requires name, runner, subscriptionId,
+          resourceGroup, and nsgName. Optional fields include loginSubscriptionId
+          and per-target rule settings including priorityMin and priorityMax.
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  create-jit-rule:
+    name: JIT ${{ matrix.target.name }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        target: ${{ fromJSON(inputs.targets) }}
+    runs-on: ${{ matrix.target.runner }}
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ matrix.target.loginSubscriptionId || matrix.target.subscriptionId }}
+
+      - name: Resolve runner private IP
+        id: runner_ip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUNNER_INTERFACE="$(ip -4 route show default \
+            | awk 'NR == 1 {for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')"
+          if [[ -z "$RUNNER_INTERFACE" ]]; then
+            echo "Could not identify the runner's default-route network interface." >&2
+            exit 1
+          fi
+
+          RUNNER_PRIVATE_IP="$(ip -4 -o addr show dev "$RUNNER_INTERFACE" scope global \
+            | awk 'NR == 1 {split($4, address, "/"); print address[1]}')"
+          if ! python3 - "$RUNNER_PRIVATE_IP" <<'PY'
+          import ipaddress
+          import sys
+          ipaddress.IPv4Address(sys.argv[1])
+          PY
+          then
+            echo "Could not resolve a valid IPv4 address on interface $RUNNER_INTERFACE." >&2
+            exit 1
+          fi
+
+          echo "runner_private_ip=$RUNNER_PRIVATE_IP" >> "$GITHUB_OUTPUT"
+          echo "Resolved runner private IP on $RUNNER_INTERFACE: $RUNNER_PRIVATE_IP"
+
+      - name: Create NSG JIT Rule
+        id: nsg_rule
+        uses: bcgov/azure-lz-actions/actions/nsg-jit-rule@main
+        with:
+          subscription-id: ${{ matrix.target.subscriptionId }}
+          resource-group: ${{ matrix.target.resourceGroup }}
+          nsg-name: ${{ matrix.target.nsgName }}
+          rule-name: ${{ matrix.target.ruleName || 'gha-temp-allow' }}
+          source-ip: ${{ steps.runner_ip.outputs.runner_private_ip }}
+          destination-ports: ${{ matrix.target.destinationPorts || '3389' }}
+          protocol: ${{ matrix.target.protocol || 'Tcp' }}
+          direction: ${{ matrix.target.direction || 'Inbound' }}
+          destination-prefixes: ${{ matrix.target.destinationPrefixes || '*' }}
+          priority: ${{ matrix.target.priority }}
+          priority-min: ${{ matrix.target.priorityMin || '100' }}
+          priority-max: ${{ matrix.target.priorityMax || '4096' }}
+          cleanup-enabled: 'true'
+
+      - name: Display Rule Creation Results
+        shell: bash
+        run: |
+          cat <<EOF_OUT
+          NSG Rule Created Successfully
+
+          Rule Details:
+            Rule Name: ${{ steps.nsg_rule.outputs.rule-name }}
+            Rule ID: ${{ steps.nsg_rule.outputs.rule-id }}
+            NSG: ${{ steps.nsg_rule.outputs.nsg-name }}
+            Resource Group: ${{ steps.nsg_rule.outputs.resource-group }}
+            Status: ${{ steps.nsg_rule.outputs.status }}
+            Runner private IP: ${{ steps.runner_ip.outputs.runner_private_ip }}
+            Timestamp: ${{ steps.nsg_rule.outputs.timestamp }}
+            Operation ID: ${{ steps.nsg_rule.outputs.operation-id }}
+            Run ID/Attempt: ${{ steps.nsg_rule.outputs.github-run-id }}/${{ steps.nsg_rule.outputs.github-run-attempt }}
+
+          NOTE: The rule will be automatically deleted when this job completes
+                (via post-action cleanup).
+          EOF_OUT
+
+      - name: Verify Rule Creation
+        shell: bash
+        env:
+          RULE_ID: ${{ steps.nsg_rule.outputs.rule-id }}
+        run: |
+          echo "Verifying rule exists in NSG..."
+          if [[ -z "$RULE_ID" ]]; then
+            echo "The action did not return a rule resource ID." >&2
+            exit 1
+          fi
+          RULE_QUERY='{name:name,direction:direction,protocol:protocol,'
+          RULE_QUERY+='sourceAddressPrefixes:sourceAddressPrefixes,destinationPortRanges:'
+          RULE_QUERY+='destinationPortRanges,access:access}'
+          az network nsg rule show \
+            --ids "$RULE_ID" \
+            --query "$RULE_QUERY" \
+            -o json
+
+      # Cleanup is automatic via action post-step

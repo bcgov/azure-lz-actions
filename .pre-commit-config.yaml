@@ -1,0 +1,42 @@
+# Pre-commit hooks configuration for BC Government Actions
+# Installation: pip install pre-commit
+# Setup: pre-commit install
+# Run manually: pre-commit run --all-files
+# Run on single file: pre-commit run --files <file>
+# Reference: https://pre-commit.com/
+
+repos:
+  # General fixes
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: '(^|/)dist(-cleanup)?/'
+      - id: trailing-whitespace
+        exclude: '(^|/)dist(-cleanup)?/'
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-yaml
+        args: ['--unsafe']
+      - id: check-json
+
+  # YAML linting
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [--config-file, .yamllint.yml]
+
+  # Markdown linting
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.24.0
+    hooks:
+      - id: markdownlint-cli2
+        exclude: '^(CODE_OF_CONDUCT|LICENSE|CONTRIBUTING)\.md$'
+
+# Exclude certain files/directories
+exclude: '(^|/)(node_modules|dist|dist-cleanup|build)/'
+
+# Minimum pre-commit version required
+minimum_pre_commit_version: '2.15.0'

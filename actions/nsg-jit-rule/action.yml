@@ -1,0 +1,101 @@
+name: 'NSG JIT Rule'
+description: 'Create a Network Security Group (NSG) just-in-time (JIT) access rule'
+author: 'BC Government'
+
+inputs:
+  subscription-id:
+    description: 'Target subscription containing the NSG; may differ from the azure/login subscription'
+    required: true
+  resource-group:
+    description: 'Azure Resource Group name'
+    required: true
+  nsg-name:
+    description: 'Network Security Group name'
+    required: true
+  rule-name:
+    description: 'Base name for the JIT rule; a unique operation suffix is added automatically'
+    required: true
+  source-ip:
+    description: 'Caller-resolved runner private IPv4 address to allow; defaults to a /32 source prefix'
+    required: false
+    default: ''
+  source-prefixes:
+    description: 'Optional comma-separated source IPv4/CIDR prefixes. Defaults to source-ip/32 when omitted.'
+    required: false
+    default: ''
+  allow-any-source:
+    description: "Allow '*' or 0.0.0.0/0 as a source prefix (not recommended)"
+    required: false
+    default: 'false'
+  destination-ports:
+    description: 'Destination ports (comma-separated or range, e.g., "80,443" or "3389")'
+    required: true
+  protocol:
+    description: 'Protocol (Tcp, Udp, or *)'
+    required: false
+    default: 'Tcp'
+  direction:
+    description: 'Rule direction (Inbound or Outbound)'
+    required: false
+    default: 'Inbound'
+  destination-prefixes:
+    description: 'Optional comma-separated destination address prefixes (IP/CIDR/*). Defaults to * when omitted.'
+    required: false
+    default: '*'
+  priority:
+    description: 'Optional rule priority (100-4096); defaults to an available priority starting at 3000'
+    required: false
+  priority-min:
+    description: 'Minimum priority for automatic selection (100-4096)'
+    required: false
+    default: '100'
+  priority-max:
+    description: 'Maximum priority for automatic selection (100-4096)'
+    required: false
+    default: '4096'
+  cleanup-enabled:
+    description: 'Remove this operation-owned rule after the job; cleanup failures fail the job (true/false)'
+    required: false
+    default: 'true'
+
+outputs:
+  rule-id:
+    description: 'Resource ID of the created NSG rule'
+  rule-name:
+    description: 'Unique name of the created NSG rule (includes an operation suffix)'
+  nsg-name:
+    description: 'Name of the NSG (for cleanup operations)'
+  resource-group:
+    description: 'Resource group name (for cleanup operations)'
+  subscription-id:
+    description: 'Subscription ID (for audit/cleanup operations)'
+  source-ip:
+    description: 'Source IPv4 address provided to the action'
+  source-cidr:
+    description: 'Effective source CIDR when exactly one source prefix is configured'
+  source-prefixes:
+    description: 'Effective source address prefixes used by the rule (CSV)'
+  destination-prefixes:
+    description: 'Effective destination address prefixes used by the rule (CSV)'
+  pre-state:
+    description: 'Previous NSG state before rule creation (JSON)'
+  post-state:
+    description: 'Current NSG rule state after creation (JSON)'
+  status:
+    description: 'Operation status (created, failed, etc.)'
+  timestamp:
+    description: 'ISO 8601 timestamp of operation'
+  operation-id:
+    description: 'Correlation ID for this action execution'
+  github-run-id:
+    description: 'GitHub run ID for this action execution'
+  github-run-attempt:
+    description: 'GitHub run attempt number for this action execution'
+  error:
+    description: 'Error message if operation failed (only set on failure)'
+
+runs:
+  using: 'node24'
+  main: 'dist/index.js'
+  post: 'dist-cleanup/cleanup.js'
+  post-if: 'always()'

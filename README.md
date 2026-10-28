@@ -2,12 +2,128 @@
 
 [![Maintained](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/bcgov/azure-lz-actions)
 
+Custom GitHub Actions for B.C. government Azure Landing Zone operations and management.
+
+## Actions
+
+This repository contains reusable GitHub Actions for common Azure infrastructure and security operations.
+
+### Available Actions
+
+- **[nsg-jit-rule](./actions/nsg-jit-rule)** — Create Network Security
+  Group (NSG) just-in-time access rules for temporary, secure resource access.
+
+## Repository Structure
+
+```
+azure-lz-actions/
+├── actions/                          # GitHub Actions directory
+│   └── nsg-jit-rule/                # NSG JIT Rule action
+│       ├── action.yml               # Action metadata and schema
+│       ├── index.js                 # Action implementation
+│       ├── package.json             # Node.js dependencies
+│       └── README.md                # Action documentation
+├── LICENSE                          # Apache 2.0 License
+├── README.md                        # This file
+├── CONTRIBUTING.md                  # Contribution guidelines
+└── CODE_OF_CONDUCT.md              # Community code of conduct
+```
+
+## Usage
+
+Each action can be used independently in your GitHub workflows. See the
+individual action's README for detailed usage instructions and examples.
+
+### Action Runtime Dependencies
+
+Node.js actions in this repository are distributed with bundled runtime artifacts.
+Workflows can call actions directly without running `npm ci` during job execution.
+
+```yaml
+- name: Use action
+  uses: bcgov/azure-lz-actions/actions/<action-name>@main
+  with:
+    # ... inputs
+```
+
+When changing action source code, regenerate and commit bundled outputs before
+opening a pull request.
+
+### General Pattern
+
+```yaml
+- uses: bcgov/azure-lz-actions/actions/<action-name>@main
+  with:
+    # Action-specific inputs
+```
+
+The repository does not yet have release tags, so the examples use `@main`.
+For production, replace it with a reviewed release tag or pin a full commit SHA.
+
+For [actions/nsg-jit-rule](./actions/nsg-jit-rule), the caller resolves and passes
+the runner's private IPv4 address before invoking the action. The runner must
+already have private network connectivity to the target resources.
+
+### NSG JIT Rule Contract
+
+The [actions/nsg-jit-rule](./actions/nsg-jit-rule) action:
+
+- uses the caller-resolved runner private IPv4 address as `source-ip`, with a `/32` source prefix
+- rejects `*` and `0.0.0.0/0` source prefixes unless `allow-any-source: 'true'` is explicitly set
+- appends a per-operation suffix to the requested `rule-name`; the actual name is available from the `rule-name` output
+- supports multiple NSGs through a workflow matrix with one target per job; each
+  post-step reads its own saved cleanup state
+- selects `subscription-id` for Azure CLI resource operations, independently of the subscription used by `azure/login`
+- verifies its operation marker before cleanup and fails the job if cleanup cannot confirm that temporary access was removed
+
+See the action README for full examples and input details.
+
+## Automation
+
+This repository includes automation to keep bundled actions reliable and releasable:
+
+- `.github/workflows/validate-actions.yml`
+  - Runs on pull requests and pushes to `main`
+  - Validates source syntax
+  - Runs action unit tests
+  - Rebuilds bundled artifacts and fails if `dist` changes are not committed
+  - Runs `pre-commit` checks across the repository
+
+- `.github/workflows/release-actions.yml`
+  - Runs on tag pushes matching `v*` (and manual dispatch)
+  - Rebuilds and verifies bundled artifacts are in sync with source
+  - Publishes a GitHub Release and uploads a packaged action tarball
+
+### Release Flow
+
+1. Merge validated changes to `main`.
+2. Create and push a semantic tag (example: `v1.2.0`).
+3. The release workflow validates the tagged source and publishes release assets.
+
+## Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for
+guidelines on:
+
+- Proposing new actions
+- Reporting issues
+- Submitting pull requests
+- Code standards and best practices
+
+## Code of Conduct
+
+Please review our [Code of Conduct](./CODE_OF_CONDUCT.md) to understand community expectations for respectful collaboration.
+
 ## License
 
-Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0. You may not use this file
+except in compliance with the License. You may obtain a copy of the License at
 
 ```
 http://www.apache.org/licenses/LICENSE-2.0
 ```
 
-Unless required to applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
