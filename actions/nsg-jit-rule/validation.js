@@ -25,27 +25,33 @@ function normalizeDirection(direction) {
   return VALID_DIRECTIONS.find(value => value.toLowerCase() === String(direction).toLowerCase()) || direction;
 }
 
-function selectPriority(existingRules, direction, requestedPriority) {
+function selectPriority(existingRules, direction, requestedPriority, priorityMin = PRIORITY_MIN, priorityMax = PRIORITY_MAX) {
+  const minimum = Number(priorityMin);
+  const maximum = Number(priorityMax);
   const usedPriorities = new Set((existingRules || [])
     .filter(rule => String(rule.direction).toLowerCase() === String(direction).toLowerCase())
     .map(rule => Number(rule.priority)));
 
   if (String(requestedPriority || '').trim() !== '') {
     const priority = Number(requestedPriority);
+    if (priority < minimum || priority > maximum) {
+      throw new Error(`Priority ${priority} is outside the configured range ${minimum}-${maximum}`);
+    }
     if (usedPriorities.has(priority)) {
       throw new Error(`Priority ${priority} is already in use for ${direction} rules on this NSG`);
     }
     return String(priority);
   }
 
-  for (let priority = 3000; priority <= PRIORITY_MAX; priority++) {
+  const startingPriority = Math.min(Math.max(3000, minimum), maximum);
+  for (let priority = startingPriority; priority <= maximum; priority++) {
     if (!usedPriorities.has(priority)) return String(priority);
   }
-  for (let priority = 2999; priority >= PRIORITY_MIN; priority--) {
+  for (let priority = startingPriority - 1; priority >= minimum; priority--) {
     if (!usedPriorities.has(priority)) return String(priority);
   }
 
-  throw new Error(`No available priority remains for ${direction} rules on this NSG`);
+  throw new Error(`No available priority remains for ${direction} rules in the configured range ${minimum}-${maximum}`);
 }
 
 function isValidAddressPrefix(prefix) {
@@ -96,9 +102,25 @@ function validateInputs(inputs) {
     errors.push("Invalid direction. Must be 'Inbound' or 'Outbound'");
   }
 
+  const priorityMin = String(inputs.priorityMin ?? PRIORITY_MIN).trim();
+  const priorityMax = String(inputs.priorityMax ?? PRIORITY_MAX).trim();
+  const validPriorityMin = /^\d+$/.test(priorityMin) && Number(priorityMin) >= PRIORITY_MIN && Number(priorityMin) <= PRIORITY_MAX;
+  const validPriorityMax = /^\d+$/.test(priorityMax) && Number(priorityMax) >= PRIORITY_MIN && Number(priorityMax) <= PRIORITY_MAX;
+  if (!validPriorityMin) {
+    errors.push(`Invalid priority-min: ${inputs.priorityMin}. Must be an integer between ${PRIORITY_MIN}-${PRIORITY_MAX}`);
+  }
+  if (!validPriorityMax) {
+    errors.push(`Invalid priority-max: ${inputs.priorityMax}. Must be an integer between ${PRIORITY_MIN}-${PRIORITY_MAX}`);
+  }
+  const minimumPriority = validPriorityMin ? Number(priorityMin) : PRIORITY_MIN;
+  const maximumPriority = validPriorityMax ? Number(priorityMax) : PRIORITY_MAX;
+  if (validPriorityMin && validPriorityMax && minimumPriority > maximumPriority) {
+    errors.push('priority-min must not exceed priority-max');
+  }
+
   const priority = String(inputs.priority || '').trim();
-  if (priority !== '' && (!/^\d+$/.test(priority) || Number(priority) < PRIORITY_MIN || Number(priority) > PRIORITY_MAX)) {
-    errors.push(`Invalid priority: ${inputs.priority}. Must be an integer between ${PRIORITY_MIN}-${PRIORITY_MAX}`);
+  if (priority !== '' && (!/^\d+$/.test(priority) || Number(priority) < minimumPriority || Number(priority) > maximumPriority)) {
+    errors.push(`Invalid priority: ${inputs.priority}. Must be an integer between ${minimumPriority}-${maximumPriority}`);
   }
 
   if (!isValidPortRange(inputs.destinationPorts)) {
@@ -116,7 +138,7 @@ function validateInputs(inputs) {
   for (const prefix of sourcePrefixes) {
     if (!isValidAddressPrefix(prefix)) {
       errors.push(`Invalid source prefix: ${prefix}`);
-    } else if ((prefix === '*' || prefix.endsWith('/0')) && !allowAnySource) {
+    } else if ((prefix === '*' || (prefix.includes('/') && Number(prefix.split('/')[1]) === 0)) && !allowAnySource) {
       errors.push(`Source prefix ${prefix} requires allow-any-source: 'true'`);
     }
   }
@@ -163,18 +185,27 @@ function buildCreateRuleArgs(inputs) {
 }
 
 function isNotFoundError(error) {
-  const message = [error.code, error.status, error.stderr]
-    .map(value => value === undefined ? '' : String(value))
-    .join(' ')
-    .toLowerCase();
-  return message.includes('resourcenotfound') || message.includes('notfound') ||
-    message.includes('does not exist') || message.includes('could not be found') ||
-    message.includes('status code: 404') || message.includes(' 404');
+  const causes = [error, error.cause].filter(Boolean);
+  const codes = causes.map(cause => String(cause.code || '').toLowerCase());
+  const statuses = causes.map(cause => Number(cause.status ?? cause.statusCode));
+  const stderr = causes.map(cause => String(cause.stderr || '')).join('\n');
+  return codes.some(code => ['resourcenotfound', 'parentresourcenotfound', 'notfound'].includes(code)) ||
+    statuses.includes(404) || /\((?:ResourceNotFound|ParentResourceNotFound|NotFound)\)/i.test(stderr) ||
+    /\bstatus(?: code)?\s*[:=]?\s*404\b/i.test(stderr);
+}
+
+function isPriorityConflictError(error) {
+  const causes = [error, error.cause].filter(Boolean);
+  const codes = causes.map(cause => String(cause.code || '').toLowerCase());
+  const stderr = causes.map(cause => String(cause.stderr || '')).join('\n');
+  return codes.includes('securityruleconflict') ||
+    /\(SecurityRuleConflict\)|Rules cannot have the same Priority and Direction/i.test(stderr);
 }
 
 module.exports = {
   buildCreateRuleArgs,
   isNotFoundError,
+  isPriorityConflictError,
   isValidAddressPrefix,
   normalizePrefixes,
   normalizeDirection,

@@ -7,7 +7,7 @@ on:
         description: >-
           JSON array of targets. Each requires name, runner, subscriptionId,
           resourceGroup, and nsgName. Optional fields include loginSubscriptionId
-          and per-target rule settings.
+          and per-target rule settings including priorityMin and priorityMax.
         required: true
         type: string
 
@@ -24,10 +24,6 @@ jobs:
       matrix:
         target: ${{ fromJSON(inputs.targets) }}
     runs-on: ${{ matrix.target.runner }}
-    concurrency:
-      group: nsg-jit-${{ matrix.target.subscriptionId }}-${{ matrix.target.resourceGroup }}-${{ matrix.target.nsgName }}
-      cancel-in-progress: false
-
     steps:
       - name: Azure Login (OIDC)
         uses: azure/login@v3
@@ -78,6 +74,8 @@ jobs:
           direction: ${{ matrix.target.direction || 'Inbound' }}
           destination-prefixes: ${{ matrix.target.destinationPrefixes || '*' }}
           priority: ${{ matrix.target.priority }}
+          priority-min: ${{ matrix.target.priorityMin || '100' }}
+          priority-max: ${{ matrix.target.priorityMax || '4096' }}
           cleanup-enabled: 'true'
 
       - name: Display Rule Creation Results
@@ -106,6 +104,7 @@ jobs:
         env:
           AZURE_RESOURCE_GROUP: ${{ matrix.target.resourceGroup }}
           AZURE_NSG_NAME: ${{ matrix.target.nsgName }}
+          AZURE_SUBSCRIPTION_ID: ${{ matrix.target.subscriptionId }}
           RULE_NAME: ${{ steps.nsg_rule.outputs.rule-name }}
         run: |
           echo "Verifying rule exists in NSG..."
@@ -116,6 +115,7 @@ jobs:
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --nsg-name "$AZURE_NSG_NAME" \
             --name "$RULE_NAME" \
+            --subscription "$AZURE_SUBSCRIPTION_ID" \
             --query "$RULE_QUERY" \
             -o json
 

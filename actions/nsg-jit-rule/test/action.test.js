@@ -4,6 +4,7 @@ const { cleanup } = require('../cleanup');
 const {
   buildCreateRuleArgs,
   isNotFoundError,
+  isPriorityConflictError,
   isValidAddressPrefix,
   normalizeDirection,
   operationRuleName,
@@ -11,7 +12,7 @@ const {
   selectPriority,
   validateInputs
 } = require('../validation');
-const { runAzureCli, saveCleanupState } = require('../index');
+const { getNSGState, runAzureCli, saveCleanupState } = require('../index');
 
 const validInputs = {
   subscriptionId: '00000000-0000-0000-0000-000000000001',
@@ -26,6 +27,8 @@ const validInputs = {
   direction: 'Inbound',
   destinationPrefixesRaw: '10.30.0.0/16',
   priority: '3000',
+  priorityMin: '100',
+  priorityMax: '4096',
   cleanupEnabled: 'true'
 };
 
@@ -70,12 +73,40 @@ test('normalizes direction case and selects a free NSG priority', () => {
   assert.deepEqual(validateInputs({ ...validInputs, direction: 'inbound' }), []);
   assert.equal(selectPriority([{ priority: 3000, direction: 'Inbound' }], 'Inbound', ''), '3001');
   assert.equal(selectPriority([{ priority: 3000, direction: 'Outbound' }], 'Inbound', ''), '3000');
+  assert.equal(selectPriority([{ priority: 3200, direction: 'Inbound' }], 'Inbound', '', '3200', '3202'), '3201');
+  assert.throws(() => selectPriority([{ priority: 3200, direction: 'Inbound' }], 'Inbound', '', '3200', '3200'), /no available priority/i);
   assert.throws(() => selectPriority([{ priority: 3000, direction: 'Inbound' }], 'Inbound', '3000'), /already in use/);
 });
 
 test('classifies Azure not-found errors without matching echoed command text', () => {
   assert.equal(isNotFoundError({ message: 'az ... target-notfound-nsg ... authorization failed' }), false);
-  assert.equal(isNotFoundError({ stderr: 'ResourceNotFound: the requested resource was not found' }), true);
+  assert.equal(isNotFoundError({ stderr: 'ERROR: (ResourceNotFound) the requested resource was not found' }), true);
+  assert.equal(isNotFoundError({ stderr: 'ERROR: (AuthorizationFailed) scope=/nsgs/target-notfound-nsg' }), false);
+  assert.equal(isNotFoundError({ status: 404 }), true);
+});
+
+test('only retries rule creation for explicit Azure priority conflicts', () => {
+  assert.equal(isPriorityConflictError({
+    message: 'Command failed: az network nsg rule create --priority 3000',
+    cause: { stderr: 'ERROR: (AuthorizationFailed) permission denied' }
+  }), false);
+  assert.equal(isPriorityConflictError({
+    cause: { stderr: 'ERROR: (SecurityRuleConflict) Rules cannot have the same Priority and Direction' }
+  }), true);
+});
+
+test('NSG state includes existing rule names and priority metadata', async () => {
+  let query;
+  const nsgState = await getNSGState('private-network-rg', 'runner-nsg', validInputs.subscriptionId, args => {
+    query = args[args.indexOf('--query') + 1];
+    return JSON.stringify({
+      name: 'runner-nsg',
+      securityRules: [{ name: 'existing-rule', priority: 3200, direction: 'Inbound' }]
+    });
+  });
+
+  assert.match(query, /securityRules\[\]\.\{name:name,priority:priority,direction:direction\}/);
+  assert.deepEqual(nsgState.securityRules, [{ name: 'existing-rule', priority: 3200, direction: 'Inbound' }]);
 });
 
 test('rejects unsafe priority text, invalid ranges, and unrestricted sources by default', () => {
@@ -89,6 +120,12 @@ test('rejects unsafe priority text, invalid ranges, and unrestricted sources by 
   assert.ok(errors.some(error => error.includes('priority')));
   assert.ok(errors.some(error => error.includes('destination ports')));
   assert.ok(errors.some(error => error.includes('allow-any-source')));
+  assert.ok(validateInputs({ ...validInputs, sourceIp: '', sourcePrefixesRaw: '0.0.0.0/00' })
+    .some(error => error.includes('allow-any-source')));
+  assert.ok(validateInputs({ ...validInputs, priorityMin: '3000', priorityMax: '2999' })
+    .some(error => error.includes('priority-min must not exceed priority-max')));
+  assert.ok(validateInputs({ ...validInputs, priority: '3100', priorityMin: '3200', priorityMax: '3300' })
+    .some(error => error.includes('Must be an integer between 3200-3300')));
 });
 
 test('requires explicit opt-in for wildcard source prefixes', () => {

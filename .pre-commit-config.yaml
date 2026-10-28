@@ -36,8 +36,7 @@ repos:
         exclude: '^(CODE_OF_CONDUCT|LICENSE|CONTRIBUTING)\.md$'
 
 # Exclude certain files/directories
-exclude: |
-  (^|/)(node_modules|dist|dist-cleanup|build)/
+exclude: '(^|/)(node_modules|dist|dist-cleanup|build)/'
 
 # Minimum pre-commit version required
 minimum_pre_commit_version: '2.15.0'

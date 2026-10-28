@@ -45,6 +45,14 @@ inputs:
   priority:
     description: 'Optional rule priority (100-4096); defaults to an available priority starting at 3000'
     required: false
+  priority-min:
+    description: 'Minimum priority for automatic selection (100-4096)'
+    required: false
+    default: '100'
+  priority-max:
+    description: 'Maximum priority for automatic selection (100-4096)'
+    required: false
+    default: '4096'
   cleanup-enabled:
     description: 'Remove this operation-owned rule after the job; cleanup failures fail the job (true/false)'
     required: false

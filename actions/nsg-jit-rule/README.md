@@ -108,12 +108,15 @@ accepts only a `targets` JSON input with required `name`, `runner`, `subscriptio
 `resourceGroup`, and `nsgName` fields. The runner IP is discovered separately
 inside each matrix job and passed as `source-ip`; the workflow does not accept source overrides. It also supports
 optional `loginSubscriptionId` and per-target `ruleName`,
-`destinationPrefixes`, `destinationPorts`, `protocol`, `direction`, and `priority`
-settings. Destination prefixes and ports are comma-separated strings.
+`destinationPrefixes`, `destinationPorts`, `protocol`, `direction`, `priority`,
+`priorityMin`, and `priorityMax` settings. Destination prefixes and ports are
+comma-separated strings.
 Omitted settings default to rule name `gha-temp-allow`, destination ports `3389`, protocol `Tcp`,
-direction `Inbound`, destination prefixes `*`, and an available priority starting at `3000`. To
-prevent simultaneous workflows targeting the same NSG from selecting the same free priority,
-serialize them with a concurrency group based on subscription, resource group, and NSG name.
+direction `Inbound`, destination prefixes `*`, and an available priority starting at `3000` within
+the default range `100`-`4096`. The action retries priority conflicts without a concurrency group;
+GitHub concurrency groups can cancel older pending runs when several runs queue for one NSG. Set
+`priorityMin` and `priorityMax` to a platform-reserved range so the temporary Allow rule respects
+the intended ordering relative to existing Deny rules.
 
 For example, provide this JSON as the workflow's `targets` input:
 
@@ -160,7 +163,9 @@ subscription.
 | `source-prefixes` | No | Comma-separated IPv4 addresses/CIDRs; overrides the `source-ip` default | `source-ip/32` |
 | `allow-any-source` | No | Permit `*` or `0.0.0.0/0` sources; avoid unless required | `false` |
 | `destination-prefixes` | No | Comma-separated IPv4 addresses/CIDRs or `*` | `*` |
-| `priority` | No | NSG rule priority from 100 through 4096; omitted values use a free priority | Available priority |
+| `priority` | No | Explicit value in range; otherwise choose automatically | Available priority |
+| `priority-min` | No | Lower bound for automatic priority selection | `100` |
+| `priority-max` | No | Upper bound for automatic priority selection | `4096` |
 | `cleanup-enabled` | No | Remove this operation's rule after the job | `true` |
 
 The example workflows always pass the runner's resolved private IP as `source-ip`, giving it a `/32` source prefix.

@@ -21,6 +21,7 @@ const { execFileSync } = require('child_process');
 const {
   buildCreateRuleArgs,
   isNotFoundError,
+  isPriorityConflictError,
   normalizeDirection,
   normalizePrefixes,
   operationRuleName,
@@ -150,12 +151,12 @@ async function verifyAzureContext(subscriptionId) {
 /**
  * Check if NSG exists and get current rules
  */
-async function getNSGState(resourceGroup, nsgName, subscriptionId) {
+async function getNSGState(resourceGroup, nsgName, subscriptionId, runAz = runAzureCli) {
   try {
     core.debug(`Checking NSG state: ${nsgName}`);
-    const output = runAzureCli([
+    const output = runAz([
       'network', 'nsg', 'show', '--resource-group', resourceGroup, '--name', nsgName,
-      '--query', '{name:name, id:id, location:location, securityRules:securityRules[].{priority:priority,direction:direction}}', '-o', 'json'
+      '--query', '{name:name, id:id, location:location, securityRules:securityRules[].{name:name,priority:priority,direction:direction}}', '-o', 'json'
     ], subscriptionId);
     return JSON.parse(output);
   } catch (error) {
@@ -189,7 +190,7 @@ async function createRule(inputs, subscriptionId) {
     core.info(`NSG rule created successfully: ${inputs.ruleName}`);
     return rule;
   } catch (error) {
-    throw new Error(`Failed to create NSG rule: ${error.message}`);
+    throw new Error(`Failed to create NSG rule: ${error.message}`, { cause: error });
   }
 }
 
@@ -198,11 +199,16 @@ async function createRuleWithAvailablePriority(inputs, subscriptionId, requested
     try {
       return await retryWithBackoff(() => createRule(inputs, subscriptionId), 'NSG rule creation');
     } catch (error) {
-      const priorityConflict = /SecurityRuleConflict|priority/i.test(error.message || '');
-      if (requestedPriority || !priorityConflict || attempt === MAX_RETRIES) throw error;
+      if (requestedPriority || !isPriorityConflictError(error) || attempt === MAX_RETRIES) throw error;
 
       const currentState = await getNSGState(inputs.resourceGroup, inputs.nsgName, subscriptionId);
-      inputs.priority = selectPriority(currentState.securityRules, inputs.direction, '');
+      inputs.priority = selectPriority(
+        currentState.securityRules,
+        inputs.direction,
+        '',
+        inputs.priorityMin,
+        inputs.priorityMax
+      );
       core.warning(`Priority conflict; retrying with available priority ${inputs.priority}`);
     }
   }
@@ -321,6 +327,8 @@ async function run() {
       direction: core.getInput('direction'),
       destinationPrefixesRaw: core.getInput('destination-prefixes') || '',
       priority: core.getInput('priority'),
+      priorityMin: core.getInput('priority-min') || '100',
+      priorityMax: core.getInput('priority-max') || '4096',
       cleanupEnabled: core.getInput('cleanup-enabled'),
       operationId,
     };
@@ -360,7 +368,13 @@ async function run() {
     inputs.sourcePrefixes = normalizePrefixes(inputs.sourcePrefixesRaw, sourcePrefixDefaults);
     inputs.destinationPrefixes = normalizePrefixes(inputs.destinationPrefixesRaw, ['*']);
     const requestedPriority = inputs.priority;
-    inputs.priority = selectPriority(nsgState.securityRules, inputs.direction, requestedPriority);
+    inputs.priority = selectPriority(
+      nsgState.securityRules,
+      inputs.direction,
+      requestedPriority,
+      inputs.priorityMin,
+      inputs.priorityMax
+    );
     inputs.ruleName = operationRuleName(inputs.ruleName, operationId);
     inputs.ownershipDescription = ownershipDescription(operationId);
     if (sourceIP) {
@@ -448,4 +462,4 @@ if (require.main === module) {
   run();
 }
 
-module.exports = { run, runAzureCli, saveCleanupState, validateInputs };
+module.exports = { getNSGState, run, runAzureCli, saveCleanupState, validateInputs };
